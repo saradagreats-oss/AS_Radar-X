@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import archiver from 'archiver';
+import * as archiver from 'archiver';
 import express, { Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
