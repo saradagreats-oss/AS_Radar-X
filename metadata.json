@@ -1,0 +1,6 @@
+{
+  "name": "AS-Radar-X",
+  "description": "Stock Content Market Research and Opportunity Intelligence system backed by real stock-market signals and Gemini strategic analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

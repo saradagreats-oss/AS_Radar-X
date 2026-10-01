@@ -1,0 +1,512 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import type { HistoryRecord, RawEvidence, ResearchReport } from '../types.js';
+
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DB_PATH = path.join(DATA_DIR, 'as_radar_x.sqlite');
+
+class StorageManager {
+  private db: DatabaseSync | null = null;
+  private memoryFallback: {
+    reports: Map<string, ResearchReport>;
+    instructions: string;
+    rejectedContent: string[];
+    evidence: Map<string, RawEvidence[]>;
+  } = {
+    reports: new Map(),
+    instructions: '',
+    rejectedContent: [],
+    evidence: new Map()
+  };
+
+  constructor() {
+    this.init();
+  }
+
+  private init() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+
+      this.db = new DatabaseSync(DB_PATH);
+      this.runMigrations();
+      this.loadSettings();
+    } catch (err) {
+      console.warn('SQLite init warning, running with fallback file storage:', err);
+      this.loadFallbackFiles();
+    }
+  }
+
+  private runMigrations() {
+    if (!this.db) return;
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reports (
+        job_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        date TEXT NOT NULL,
+        status TEXT NOT NULL,
+        photo_count INTEGER NOT NULL,
+        video_count INTEGER NOT NULL,
+        duration TEXT,
+        sources_processed TEXT,
+        source_status TEXT,
+        report_json TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS evidence_store (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        url TEXT NOT NULL,
+        evidence_type TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        raw_title TEXT NOT NULL,
+        raw_keywords TEXT,
+        metadata_json TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS user_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rejected_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS opportunity_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        concept TEXT,
+        created_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  private loadSettings() {
+    try {
+      const instructions = this.getInstructions();
+      this.memoryFallback.instructions = instructions;
+      const rejected = this.getRejectedContent();
+      this.memoryFallback.rejectedContent = rejected;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  private loadFallbackFiles() {
+    try {
+      const reportsFile = path.join(DATA_DIR, 'reports_fallback.json');
+      if (fs.existsSync(reportsFile)) {
+        const raw = fs.readFileSync(reportsFile, 'utf8');
+        const list: ResearchReport[] = JSON.parse(raw);
+        for (const r of list) {
+          this.memoryFallback.reports.set(r.job_id, r);
+        }
+      }
+
+      const settingsFile = path.join(DATA_DIR, 'settings_fallback.json');
+      if (fs.existsSync(settingsFile)) {
+        const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+        this.memoryFallback.instructions = parsed.instructions || '';
+        this.memoryFallback.rejectedContent = parsed.rejectedContent || [];
+      }
+    } catch (e) {
+      console.error('Error loading fallback storage files:', e);
+    }
+  }
+
+  private persistFallback() {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const reportsFile = path.join(DATA_DIR, 'reports_fallback.json');
+      const list = Array.from(this.memoryFallback.reports.values());
+      fs.writeFileSync(reportsFile, JSON.stringify(list, null, 2), 'utf8');
+
+      const settingsFile = path.join(DATA_DIR, 'settings_fallback.json');
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify(
+          {
+            instructions: this.memoryFallback.instructions,
+            rejectedContent: this.memoryFallback.rejectedContent
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
+    } catch (e) {
+      console.error('Failed writing fallback files:', e);
+    }
+  }
+
+  public saveReport(report: ResearchReport) {
+    this.memoryFallback.reports.set(report.job_id, report);
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO reports (
+            job_id, created_at, date, status, photo_count, video_count,
+            duration, sources_processed, source_status, report_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        stmt.run(
+          report.job_id,
+          report.created_at,
+          report.date,
+          report.status,
+          report.photos.length,
+          report.videos.length,
+          report.duration,
+          JSON.stringify(report.sources_processed),
+          JSON.stringify(report.source_status),
+          JSON.stringify(report)
+        );
+
+        // Record opportunities for history protection
+        const oppStmt = this.db.prepare(`
+          INSERT INTO opportunity_history (job_id, type, title, concept, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+
+        for (const p of report.photos) {
+          oppStmt.run(
+            report.job_id,
+            'photo',
+            p.title || 'Untitled Photo',
+            p.concept || p.description || '',
+            report.created_at || new Date().toISOString()
+          );
+        }
+        for (const v of report.videos) {
+          oppStmt.run(
+            report.job_id,
+            'video',
+            v.title || 'Untitled Video',
+            v.concept || v.description || '',
+            report.created_at || new Date().toISOString()
+          );
+        }
+      } catch (err) {
+        console.error('SQLite saveReport error:', err);
+      }
+    }
+  }
+
+  public getReport(jobId: string): ResearchReport | null {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare('SELECT report_json FROM reports WHERE job_id = ?');
+        const row = stmt.get(jobId) as { report_json: string } | undefined;
+        if (row && row.report_json) {
+          return JSON.parse(row.report_json);
+        }
+      } catch (err) {
+        console.error('SQLite getReport error:', err);
+      }
+    }
+    return this.memoryFallback.reports.get(jobId) || null;
+  }
+
+  public getHistory(): HistoryRecord[] {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          SELECT job_id, date, photo_count, video_count, status, duration, report_json
+          FROM reports
+          ORDER BY created_at DESC
+          LIMIT 50
+        `);
+        const rows = stmt.all() as Array<{
+          job_id: string;
+          date: string;
+          photo_count: number;
+          video_count: number;
+          status: string;
+          duration: string;
+          report_json: string;
+        }>;
+
+        return rows.map((r) => {
+          let majorTopics: string[] = [];
+          let sourceStatus = {};
+          try {
+            const parsed = JSON.parse(r.report_json);
+            sourceStatus = parsed.source_status || {};
+            const photoTitles = (parsed.photos || []).map((p: any) => p.title);
+            const videoTitles = (parsed.videos || []).map((v: any) => v.title);
+            majorTopics = [...photoTitles, ...videoTitles].slice(0, 3);
+          } catch {
+            // ignore
+          }
+
+          return {
+            job_id: r.job_id,
+            date: r.date,
+            photo_count: r.photo_count,
+            video_count: r.video_count,
+            status: r.status,
+            duration: r.duration,
+            major_topics: majorTopics,
+            source_status: sourceStatus
+          };
+        });
+      } catch (err) {
+        console.error('SQLite getHistory error:', err);
+      }
+    }
+
+    const list = Array.from(this.memoryFallback.reports.values())
+      .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      .map((r) => ({
+        job_id: r.job_id,
+        date: r.date,
+        photo_count: r.photos.length,
+        video_count: r.videos.length,
+        status: r.status,
+        duration: r.duration,
+        major_topics: [...r.photos.map((p) => p.title), ...r.videos.map((v) => v.title)].slice(0, 3),
+        source_status: r.source_status
+      }));
+
+    return list;
+  }
+
+  public saveRawEvidence(jobId: string, items: RawEvidence[]) {
+    this.memoryFallback.evidence.set(jobId, items);
+    if (!this.db || !items.length) return;
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO evidence_store (
+          job_id, source, url, evidence_type, collected_at, raw_title, raw_keywords, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const item of items) {
+        stmt.run(
+          jobId,
+          item.source,
+          item.url || '',
+          item.evidence_type || 'search_observation',
+          item.collected_at || new Date().toISOString(),
+          item.raw_title || '',
+          JSON.stringify(item.raw_keywords || []),
+          JSON.stringify(item.metadata || {})
+        );
+      }
+    } catch (err) {
+      console.error('SQLite saveRawEvidence error:', err);
+    }
+  }
+
+  public getRawEvidence(jobId: string): RawEvidence[] {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          SELECT source, url, evidence_type, collected_at, raw_title, raw_keywords, metadata_json
+          FROM evidence_store
+          WHERE job_id = ?
+        `);
+        const rows = stmt.all(jobId) as Array<{
+          source: string;
+          url: string;
+          evidence_type: string;
+          collected_at: string;
+          raw_title: string;
+          raw_keywords: string;
+          metadata_json: string;
+        }>;
+        if (rows.length > 0) {
+          return rows.map((r) => ({
+            source: r.source as any,
+            url: r.url,
+            evidence_type: r.evidence_type as any,
+            collected_at: r.collected_at,
+            raw_title: r.raw_title,
+            raw_keywords: JSON.parse(r.raw_keywords || '[]'),
+            metadata: JSON.parse(r.metadata_json || '{}')
+          }));
+        }
+      } catch (err) {
+        console.error('SQLite getRawEvidence error:', err);
+      }
+    }
+    return this.memoryFallback.evidence.get(jobId) || [];
+  }
+
+  public getRecentOpportunityHistory(limit: number = 30): Array<{ title: string; concept: string }> {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          SELECT title, concept FROM opportunity_history
+          ORDER BY id DESC
+          LIMIT ?
+        `);
+        const rows = stmt.all(limit) as Array<{ title: string; concept: string }>;
+        return rows;
+      } catch (err) {
+        console.error('SQLite getRecentOpportunityHistory error:', err);
+      }
+    }
+
+    // fallback from reports
+    const result: Array<{ title: string; concept: string }> = [];
+    for (const r of Array.from(this.memoryFallback.reports.values())) {
+      for (const p of r.photos) result.push({ title: p.title, concept: p.concept || p.description });
+      for (const v of r.videos) result.push({ title: v.title, concept: v.concept || v.description });
+      if (result.length >= limit) break;
+    }
+    return result;
+  }
+
+  public getInstructions(): string {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'gemini_instructions'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row) return row.value || '';
+      } catch (err) {
+        console.error('SQLite getInstructions error:', err);
+      }
+    }
+    return this.memoryFallback.instructions;
+  }
+
+  public saveInstructions(instructions: string): void {
+    const text = (instructions || '').slice(0, 500);
+    this.memoryFallback.instructions = text;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO user_settings (key, value)
+          VALUES ('gemini_instructions', ?)
+        `);
+        stmt.run(text);
+      } catch (err) {
+        console.error('SQLite saveInstructions error:', err);
+      }
+    }
+  }
+
+  public clearInstructions(): void {
+    this.memoryFallback.instructions = '';
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("DELETE FROM user_settings WHERE key = 'gemini_instructions'");
+        stmt.run();
+      } catch (err) {
+        console.error('SQLite clearInstructions error:', err);
+      }
+    }
+  }
+
+  public getCustomApiKey(): string {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'custom_gemini_api_key'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value) return row.value;
+      } catch (err) {
+        console.error('SQLite getCustomApiKey error:', err);
+      }
+    }
+    return '';
+  }
+
+  public saveCustomApiKey(key: string): void {
+    const val = (key || '').trim();
+    if (this.db) {
+      try {
+        if (!val) {
+          this.db.prepare("DELETE FROM user_settings WHERE key = 'custom_gemini_api_key'").run();
+        } else {
+          this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('custom_gemini_api_key', ?)").run(val);
+        }
+      } catch (err) {
+        console.error('SQLite saveCustomApiKey error:', err);
+      }
+    }
+  }
+
+  public getCustomModel(): string {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'custom_gemini_model'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value) return row.value;
+      } catch (err) {
+        console.error('SQLite getCustomModel error:', err);
+      }
+    }
+    return 'gemini-3.8-flash';
+  }
+
+  public saveCustomModel(model: string): void {
+    const val = (model || '').trim();
+    if (this.db) {
+      try {
+        this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('custom_gemini_model', ?)").run(val || 'gemini-3.8-flash');
+      } catch (err) {
+        console.error('SQLite saveCustomModel error:', err);
+      }
+    }
+  }
+
+  public getRejectedContent(): string[] {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare('SELECT item_text FROM rejected_items ORDER BY id ASC');
+        const rows = stmt.all() as Array<{ item_text: string }>;
+        return rows.map((r) => r.item_text).filter(Boolean);
+      } catch (err) {
+        console.error('SQLite getRejectedContent error:', err);
+      }
+    }
+    return this.memoryFallback.rejectedContent;
+  }
+
+  public saveRejectedContent(items: string[]): void {
+    const cleaned = (items || []).map((s) => String(s).trim()).filter(Boolean);
+    this.memoryFallback.rejectedContent = cleaned;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        this.db.exec('DELETE FROM rejected_items');
+        const stmt = this.db.prepare('INSERT INTO rejected_items (item_text, created_at) VALUES (?, ?)');
+        const now = new Date().toISOString();
+        for (const item of cleaned) {
+          stmt.run(item, now);
+        }
+      } catch (err) {
+        console.error('SQLite saveRejectedContent error:', err);
+      }
+    }
+  }
+
+  public deleteRejectedContent(index: number): void {
+    const list = this.getRejectedContent();
+    if (index >= 0 && index < list.length) {
+      list.splice(index, 1);
+      this.saveRejectedContent(list);
+    }
+  }
+}
+
+export const storage = new StorageManager();
