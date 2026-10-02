@@ -1,22 +1,29 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type {
+  DiscordConfig,
   HistoryRecord,
   PhotoOpportunity,
+  RedditConfig,
   ResearchReport,
   ResearchStage,
   VideoOpportunity
 } from '../server/types.js';
+import { PhotoCard } from './components/PhotoCard.js';
+import { VideoCard } from './components/VideoCard.js';
+import { EvidenceModal } from './components/EvidenceModal.js';
+import { RedditConfigSection } from './components/RedditConfigSection.js';
+import { DiscordConfigSection } from './components/DiscordConfigSection.js';
 
 const RESEARCH_STAGES: Array<{ id: ResearchStage; label: string }> = [
   { id: 'INITIALIZING', label: 'INITIALIZING RESEARCH ENGINE' },
-  { id: 'COLLECTING', label: 'COLLECTING MARKET DATA' },
+  { id: 'COLLECTING', label: 'COLLECTING DISCUSSION DATA (REDDIT & DISCORD)' },
   { id: 'NORMALIZING', label: 'NORMALIZING RESULTS' },
   { id: 'DEDUPLICATING', label: 'REMOVING DUPLICATES' },
-  { id: 'CLUSTERING', label: 'CLUSTERING CONCEPTS' },
+  { id: 'CLUSTERING', label: 'CLUSTERING HUMAN COMPLAINTS & DEMAND' },
   { id: 'DEMAND_ANALYSIS', label: 'ANALYZING RECURRING DEMAND' },
-  { id: 'SUPPLY_GAP', label: 'ANALYZING SUPPLY / GAPS' },
+  { id: 'SUPPLY_GAP', label: 'ANALYZING ASSET SHORTAGES / GAPS' },
   { id: 'COMMERCIAL_USE', label: 'MAPPING COMMERCIAL USE' },
-  { id: 'LONGEVITY', label: 'CHECKING LONGEVITY' },
+  { id: 'LONGEVITY', label: 'CHECKING EVERGREEN LONGEVITY' },
   { id: 'SCORING', label: 'SCORING OPPORTUNITIES' },
   { id: 'PREPARING_PHOTOS', label: 'PREPARING PHOTO IDEAS' },
   { id: 'PREPARING_VIDEOS', label: 'PREPARING VIDEO IDEAS' },
@@ -40,13 +47,16 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+  // Platform Data Switch state (Default: ON)
+  const [platformDataEnabled, setPlatformDataEnabled] = useState<boolean>(true);
+
   // Live Sources Probe & Stream state
   const [probeData, setProbeData] = useState<any | null>(null);
   const [isProbing, setIsProbing] = useState<boolean>(false);
   const [probeFilter, setProbeFilter] = useState<string>('ALL');
   const [probeSearch, setProbeSearch] = useState<string>('');
 
-  // Raw Evidence Modal state (Stored in SQLite)
+  // Raw Evidence Modal state
   const [evidenceModal, setEvidenceModal] = useState<{
     isOpen: boolean;
     jobId: string;
@@ -82,9 +92,42 @@ export default function App() {
   // System Config
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
   const [sourcesStatus, setSourcesStatus] = useState<Record<string, string>>({
-    Shutterstock: 'NOT CHECKED',
-    'Adobe Stock': 'NOT CHECKED',
-    Pond5: 'NOT CHECKED'
+    Reddit: 'NOT CHECKED',
+    Discord: 'NOT CHECKED'
+  });
+
+  // Reddit Configuration State
+  const [redditConfig, setRedditConfig] = useState<RedditConfig>({
+    clientId: '',
+    clientSecret: '',
+    userAgent: 'AS-Radar-X/2.0 (by /u/saradagreats)',
+    subreddits: [
+      'StockPhotography',
+      'AdobeStock',
+      'Shutterstock',
+      'graphic_design',
+      'VideoEditing',
+      'editors',
+      'Midjourney',
+      'blender',
+      'vfx'
+    ],
+    timeframe: '24h',
+    collectPosts: true,
+    collectComments: true,
+    connected: false,
+    collectedCount: 0
+  });
+
+  // Discord Configuration State
+  const [discordConfig, setDiscordConfig] = useState<DiscordConfig>({
+    botToken: '',
+    guilds: [],
+    timeframe: '24h',
+    collectMessages: true,
+    collectThreads: true,
+    connected: false,
+    collectedCount: 0
   });
 
   // Gemini Configuration State
@@ -131,7 +174,7 @@ export default function App() {
     return `${base}${cleanPath}`;
   };
 
-  // Theme setup
+  // Initial Data Loading
   useEffect(() => {
     const savedTheme = (localStorage.getItem('as_radar_x_theme') as 'dark' | 'light') || 'dark';
     setTheme(savedTheme);
@@ -146,7 +189,9 @@ export default function App() {
     const savedApiBase = localStorage.getItem('as_radar_x_api_base');
     if (savedApiBase) setApiBaseUrl(savedApiBase);
 
-    // Load initial settings and history
+    loadPlatformData();
+    loadRedditConfig();
+    loadDiscordConfig();
     loadInstructions();
     loadRejectedContent();
     loadSourcesStatus();
@@ -188,7 +233,98 @@ export default function App() {
     };
   }, [isResearching]);
 
-  // Load Instructions
+  // Load Platform Data Switch
+  const loadPlatformData = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/platform-data'));
+      if (res.ok) {
+        const data = await res.json();
+        setPlatformDataEnabled(data.enabled ?? true);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleTogglePlatformData = async () => {
+    const nextVal = !platformDataEnabled;
+    setPlatformDataEnabled(nextVal);
+    try {
+      const res = await fetch(getApiUrl('/api/platform-data'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextVal })
+      });
+      if (res.ok) {
+        showToast(
+          nextVal
+            ? 'Platform Data ENABLED: Collecting live Reddit & Discord discussion data.'
+            : 'Platform Data DISABLED: Running in pure Gemini AI intelligence and historical memory mode.'
+        );
+        loadSourcesStatus();
+      }
+    } catch (err: any) {
+      showToast(`Failed to update toggle: ${err.message}`);
+    }
+  };
+
+  // Load Reddit Config
+  const loadRedditConfig = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/reddit/config'));
+      if (res.ok) {
+        const data = await res.json();
+        setRedditConfig(data);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveRedditConfig = async (updated: Partial<RedditConfig>) => {
+    const res = await fetch(getApiUrl('/api/reddit/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updated)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setRedditConfig(data.config);
+      loadSourcesStatus();
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  };
+
+  // Load Discord Config
+  const loadDiscordConfig = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/discord/config'));
+      if (res.ok) {
+        const data = await res.json();
+        setDiscordConfig(data);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveDiscordConfig = async (updated: Partial<DiscordConfig>) => {
+    const res = await fetch(getApiUrl('/api/discord/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updated)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setDiscordConfig(data.config);
+      loadSourcesStatus();
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  };
+
+  // Instructions
   const loadInstructions = async () => {
     try {
       const res = await fetch(getApiUrl('/api/instruction'));
@@ -206,10 +342,10 @@ export default function App() {
       const res = await fetch(getApiUrl('/api/instruction'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instructions: instructionsText.slice(0, 500) })
+        body: JSON.stringify({ instructions: instructionsText.slice(0, 1000) })
       });
       if (res.ok) {
-        showToast('Gemini analyst instructions saved successfully.');
+        showToast('Analyst instructions saved successfully.');
       }
     } catch (err: any) {
       showToast(`Failed saving instructions: ${err.message}`);
@@ -228,7 +364,7 @@ export default function App() {
     }
   };
 
-  // Load Rejected Content
+  // Rejected Content
   const loadRejectedContent = async () => {
     try {
       const res = await fetch(getApiUrl('/api/rejected-content'));
@@ -291,13 +427,16 @@ export default function App() {
           map[k] = (v as any).overall || 'AVAILABLE';
         }
         setSourcesStatus(map);
+        if (data.platformDataEnabled !== undefined) {
+          setPlatformDataEnabled(data.platformDataEnabled);
+        }
       }
     } catch {
       // ignore
     }
   };
 
-  // Run Real Live Probe of Adobe Stock, Shutterstock, Pond5
+  // Run Real Live Probe of Reddit and Discord
   const runSourcesProbe = async (force: boolean = false) => {
     setIsProbing(true);
     try {
@@ -315,7 +454,7 @@ export default function App() {
           setSourcesStatus(map);
         }
         if (force) {
-          showToast(`Live probe completed! Discovered ${data.totalEvidenceCount || 0} real marketplace evidence signals.`);
+          showToast(`Live probe finished! Inspected ${data.totalEvidenceCount || 0} discussion signals.`);
         }
       } else {
         throw new Error(`Probe HTTP ${res.status}`);
@@ -327,7 +466,7 @@ export default function App() {
     }
   };
 
-  // Inspect Raw Evidence for Job Stored in SQLite
+  // Open Raw Evidence Modal
   const handleOpenJobEvidence = async (jobId: string) => {
     setEvidenceModal({
       isOpen: true,
@@ -408,9 +547,7 @@ export default function App() {
     setIsTestingGemini(true);
     setGeminiTestFeedback(null);
     try {
-      const body: any = {
-        model: selectedModelInput
-      };
+      const body: any = { model: selectedModelInput };
       if (geminiApiKeyInput.trim()) {
         body.apiKey = geminiApiKeyInput.trim();
       }
@@ -430,7 +567,7 @@ export default function App() {
       } else {
         setGeminiTestFeedback({
           success: false,
-          message: data.error || 'Failed to authenticate with Gemini API. Check your key and model.'
+          message: data.error || 'Failed to authenticate with Gemini API.'
         });
       }
     } catch (err: any) {
@@ -537,7 +674,6 @@ export default function App() {
       setProgressMessage(data.message || 'Processing research pipeline...');
 
       if (data.status === 'COMPLETED') {
-        // Fetch full report
         const repRes = await fetch(getApiUrl(`/api/report/${encodeURIComponent(jobId)}`));
         if (repRes.ok) {
           const reportData = await repRes.json();
@@ -558,7 +694,6 @@ export default function App() {
         throw new Error(data.error || data.message || 'Research pipeline failed.');
       }
 
-      // Schedule next poll
       pollTimerRef.current = setTimeout(() => pollJobStatus(jobId), 2000);
     } catch (err: any) {
       setIsResearching(false);
@@ -598,290 +733,280 @@ export default function App() {
   };
 
   const formatTimer = (totalSeconds: number) => {
-    const mins = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
-    const secs = String(totalSeconds % 60).padStart(2, '0');
-    return `Elapsed ${mins}:${secs}`;
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const currentDateFormatted = new Date()
-    .toLocaleDateString('en-GB', {
-      year: 'numeric',
-      month: 'short',
-      day: '2-digit'
-    })
-    .toUpperCase();
-
-  const totalOpportunities = (currentReport?.photos?.length || 0) + (currentReport?.videos?.length || 0);
-
   return (
-    <div className="min-h-screen bg-[var(--bg-main)] text-[var(--text-main)] font-['IBM_Plex_Sans'] relative pb-16">
+    <div className="relative min-h-screen bg-[var(--bg-main)] text-[var(--text-main)] font-sans antialiased pb-20 selection:bg-[var(--accent-amber)] selection:text-black">
       <div className="grid-bg"></div>
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#161c28] border border-[var(--accent-amber)] text-[var(--text-main)] text-xs font-mono py-2.5 px-4 rounded shadow-2xl flex items-center gap-2 animate-bounce">
-          <i className="fa-solid fa-circle-check text-[var(--accent-amber)]"></i>
+        <div className="fixed top-4 right-4 z-50 py-2.5 px-4 bg-[var(--bg-panel)] border border-[var(--accent-amber)] text-[var(--text-main)] rounded shadow-2xl font-mono text-xs animate-fade-in flex items-center gap-2">
+          <i className="fa-solid fa-bell text-[var(--accent-amber)]"></i>
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Header */}
-      <header className="sticky top-0 z-40 backdrop-blur-md bg-[#0a0d14]/88 border-b border-[var(--border-color)]">
-        <div className="max-w-[1400px] mx-auto px-4 min-h-[64px] flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-xl font-bold font-brand tracking-wide">
-              <i className="fa-solid fa-radar text-[var(--accent-amber)]"></i>
-              <span>
-                AS-RADAR-<span className="text-[var(--accent-amber)]">X</span>
-              </span>
-            </div>
-            <div className="hidden sm:block pl-4 border-l border-[var(--border-color)] text-[var(--text-dim)] text-[0.66rem] font-semibold tracking-widest uppercase">
-              Stock Content Market Intelligence
+      {/* Main Container */}
+      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 pt-6">
+        {/* Top Header Bar */}
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 mb-6 border-b border-[var(--border-color)]">
+          <div className="flex items-center gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold font-brand tracking-wider uppercase text-[var(--text-main)]">
+                  AS-RADAR-X
+                </h1>
+                <span className="text-[0.65rem] px-2 py-0.5 rounded bg-[var(--bg-input)] border border-[var(--border-subtle)] font-mono text-[var(--accent-amber)]">
+                  v2.0 DISCUSSIONS
+                </span>
+              </div>
+              <p className="text-xs text-[var(--text-muted)] font-mono">
+                Stock Opportunity Intelligence Backed by Reddit &amp; Discord Human Discussions
+              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="inline-flex items-center gap-2 py-1.5 px-3 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded-full text-[0.68rem] font-bold font-mono">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  isResearching
-                    ? 'bg-[var(--accent-cyan)] shadow-[0_0_8px_var(--accent-cyan)] animate-pulse-dot'
-                    : errorInfo
-                    ? 'bg-[var(--status-error)] shadow-[0_0_8px_var(--status-error)]'
-                    : 'bg-[var(--status-success)] shadow-[0_0_8px_var(--status-success)]'
-                }`}
-              ></span>
-              <span>
-                {isResearching ? 'RESEARCH RUNNING' : errorInfo ? 'ENGINE ERROR' : 'ENGINE READY'}
-              </span>
-            </div>
-
-            <div className="hidden md:block text-[var(--text-dim)] text-[0.72rem] font-mono">
-              {currentDateFormatted}
-            </div>
-
+          {/* Quick Status Badges & Theme Toggle */}
+          <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+            {/* Platform Data Toggle Badge */}
             <button
-              onClick={toggleTheme}
-              className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs text-[var(--text-main)] transition"
-              title="Toggle Light / Dark Theme"
-              type="button"
+              onClick={handleTogglePlatformData}
+              className={`py-1.5 px-3 rounded flex items-center gap-1.5 border transition ${
+                platformDataEnabled
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-400'
+              }`}
+              title="Click to toggle Platform Data collection mode"
             >
-              <i className={`fa-solid ${theme === 'dark' ? 'fa-sun text-[var(--accent-amber)]' : 'fa-moon'}`}></i>
+              <i className={`fa-solid ${platformDataEnabled ? 'fa-toggle-on text-emerald-400' : 'fa-toggle-off'}`}></i>
+              <span className="text-[0.68rem] font-bold">PLATFORM DATA: {platformDataEnabled ? 'ON' : 'OFF'}</span>
             </button>
 
-            <a
-              href={getApiUrl('/api/download-zip')}
-              download="as-radar-x-project.zip"
-              className="py-1.5 px-3 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold font-mono text-xs rounded flex items-center gap-1.5 shadow-sm transition"
-              title="Download Complete Project Source Code (.ZIP)"
+            {/* Reddit Status Badge */}
+            <span
+              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
+                !platformDataEnabled
+                  ? 'bg-zinc-800 border-zinc-700 text-zinc-500'
+                  : redditConfig.connected
+                  ? 'bg-orange-500/10 border-orange-500/30 text-orange-400'
+                  : 'bg-zinc-800/80 border-zinc-700 text-zinc-400'
+              }`}
             >
-              <i className="fa-solid fa-download"></i>
-              <span className="hidden sm:inline">Download ZIP</span>
-            </a>
+              <i className="fa-brands fa-reddit text-orange-400"></i>
+              <span>REDDIT: {!platformDataEnabled ? 'DISABLED' : redditConfig.connected ? 'READY' : 'UNCONFIGURED'}</span>
+            </span>
+
+            {/* Discord Status Badge */}
+            <span
+              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
+                !platformDataEnabled
+                  ? 'bg-zinc-800 border-zinc-700 text-zinc-500'
+                  : discordConfig.connected
+                  ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+                  : 'bg-zinc-800/80 border-zinc-700 text-zinc-400'
+              }`}
+            >
+              <i className="fa-brands fa-discord text-indigo-400"></i>
+              <span>DISCORD: {!platformDataEnabled ? 'DISABLED' : discordConfig.connected ? 'READY' : 'UNCONFIGURED'}</span>
+            </span>
+
+            {/* Gemini AI Status Badge */}
+            <span
+              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
+                geminiConfig.hasKey
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : 'bg-red-500/10 border-red-500/30 text-red-400'
+              }`}
+            >
+              <i className="fa-solid fa-brain"></i>
+              <span>GEMINI: {geminiConfig.hasKey ? 'ACTIVE' : 'NO KEY'}</span>
+            </span>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleTheme}
+              className="py-1.5 px-2.5 bg-[var(--bg-input)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-[var(--text-main)] transition"
+              title="Toggle theme"
+            >
+              <i className={`fa-solid ${theme === 'dark' ? 'fa-sun text-amber-400' : 'fa-moon text-indigo-400'}`}></i>
+            </button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main Content Container */}
-      <div className="max-w-[1400px] mx-auto px-4 mt-4">
         {/* Navigation Tabs */}
-        <nav className="flex gap-1 overflow-x-auto border-b border-[var(--border-color)] mb-6 scrollbar-none">
-          <button
-            onClick={() => setActiveTab('research')}
-            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition whitespace-nowrap ${
-              activeTab === 'research'
-                ? 'text-[var(--accent-amber)] border-[var(--accent-amber)] bg-amber-500/5'
-                : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-main)]'
-            }`}
-          >
-            <i className="fa-solid fa-microchip"></i>
-            Research Engine
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab('sources');
-              if (!probeData) runSourcesProbe(false);
-            }}
-            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition whitespace-nowrap ${
-              activeTab === 'sources'
-                ? 'text-[var(--accent-amber)] border-[var(--accent-amber)] bg-amber-500/5'
-                : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-main)]'
-            }`}
-          >
-            <i className="fa-solid fa-satellite-dish"></i>
-            Live Data Feeds & Probe
-          </button>
-
-          <button
-            onClick={() => setActiveTab('instructions')}
-            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition whitespace-nowrap ${
-              activeTab === 'instructions'
-                ? 'text-[var(--accent-amber)] border-[var(--accent-amber)] bg-amber-500/5'
-                : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-main)]'
-            }`}
-          >
-            <i className="fa-solid fa-sliders"></i>
-            Intelligence Setup
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab('history');
-              loadHistory();
-            }}
-            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition whitespace-nowrap ${
-              activeTab === 'history'
-                ? 'text-[var(--accent-amber)] border-[var(--accent-amber)] bg-amber-500/5'
-                : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-main)]'
-            }`}
-          >
-            <i className="fa-solid fa-clock-rotate-left"></i>
-            Research History
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab('settings');
-              loadGeminiConfig();
-            }}
-            className={`flex items-center gap-2 py-3 px-4 text-xs font-bold uppercase tracking-wider border-b-2 transition whitespace-nowrap ${
-              activeTab === 'settings'
-                ? 'text-[var(--accent-amber)] border-[var(--accent-amber)] bg-amber-500/5'
-                : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-main)]'
-            }`}
-          >
-            <i className="fa-solid fa-gear"></i>
-            System Config
-          </button>
+        <nav className="flex items-center gap-2 border-b border-[var(--border-color)] mb-6 overflow-x-auto pb-1">
+          {[
+            { id: 'research', label: 'RESEARCH PIPELINE', icon: 'fa-microscope' },
+            { id: 'sources', label: 'HUMAN SOURCES', icon: 'fa-comments' },
+            { id: 'instructions', label: 'INSTRUCTIONS & REJECTIONS', icon: 'fa-sliders' },
+            { id: 'history', label: 'HISTORY', icon: 'fa-clock-rotate-left' },
+            { id: 'settings', label: 'SYSTEM CONFIG', icon: 'fa-gear' }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`py-2 px-4 rounded-t font-mono text-xs font-bold tracking-wider uppercase transition flex items-center gap-2 whitespace-nowrap ${
+                activeTab === tab.id
+                  ? 'bg-[var(--bg-card)] border-t-2 border-x border-b-0 border-t-[var(--accent-amber)] border-x-[var(--border-color)] text-[var(--accent-amber)] shadow'
+                  : 'text-[var(--text-dim)] hover:text-[var(--text-main)] hover:bg-[var(--bg-input)]'
+              }`}
+            >
+              <i className={`fa-solid ${tab.icon}`}></i>
+              <span>{tab.label}</span>
+            </button>
+          ))}
         </nav>
 
         {/* ========================================================
-             TAB 1: RESEARCH ENGINE
+             TAB 1: RESEARCH PIPELINE
              ======================================================== */}
         {activeTab === 'research' && (
-          <div>
-            {/* Control Panel Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 mb-4 shadow-lg">
-              <div className="flex items-center justify-between pb-3 mb-4 border-b border-[var(--border-subtle)]">
-                <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
-                  <i className="fa-solid fa-sliders text-[var(--accent-amber)]"></i>
-                  Execution Parameters
-                </div>
-                <span className="font-mono text-[0.65rem] text-[var(--text-dim)]">
-                  AS-RADAR-X V2 ENGINE
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
+          <div className="space-y-6">
+            {/* Control Bar */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-4">
+                {/* Photo Count */}
                 <div>
-                  <label className="block text-[0.67rem] font-bold font-mono tracking-wider text-[var(--text-muted)] uppercase mb-1.5">
-                    Photo Opportunities Count
+                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">
+                    Photo Opportunities
                   </label>
                   <select
                     value={photoCount}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      setPhotoCount(val);
-                      localStorage.setItem('as_radar_x_photo_count', String(val));
-                    }}
                     disabled={isResearching}
-                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2.5 text-sm font-mono text-[var(--text-main)] outline-none"
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      setPhotoCount(v);
+                      localStorage.setItem('as_radar_x_photo_count', String(v));
+                    }}
+                    className="bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
                   >
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 10].map((num) => (
-                      <option key={num} value={num}>
-                        {num} {num === 1 ? 'Item' : 'Items'}
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                      <option key={n} value={n}>
+                        {n} Photos
                       </option>
                     ))}
                   </select>
                 </div>
 
+                {/* Video Count */}
                 <div>
-                  <label className="block text-[0.67rem] font-bold font-mono tracking-wider text-[var(--text-muted)] uppercase mb-1.5">
-                    Video Opportunities Count
+                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">
+                    Video Opportunities
                   </label>
                   <select
                     value={videoCount}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      setVideoCount(val);
-                      localStorage.setItem('as_radar_x_video_count', String(val));
-                    }}
                     disabled={isResearching}
-                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2.5 text-sm font-mono text-[var(--text-main)] outline-none"
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      setVideoCount(v);
+                      localStorage.setItem('as_radar_x_video_count', String(v));
+                    }}
+                    className="bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
                   >
-                    {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((num) => (
-                      <option key={num} value={num}>
-                        {num} {num === 1 ? 'Item' : 'Items'}
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                      <option key={n} value={n}>
+                        {n} Videos
                       </option>
                     ))}
                   </select>
                 </div>
 
-                <div className="flex sm:col-span-2 lg:col-span-1 justify-end">
-                  <button
-                    onClick={handleStartResearch}
-                    disabled={isResearching}
-                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 min-h-[42px] px-6 rounded bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold text-xs uppercase tracking-wider shadow-[0_0_14px_var(--accent-amber-glow)] transition transform active:scale-95"
-                  >
-                    <i className={`fa-solid ${isResearching ? 'fa-spinner fa-spin' : 'fa-bolt'}`}></i>
-                    {isResearching ? 'Research in Progress...' : "Start Today's Research"}
-                  </button>
+                {/* Mode Indicator */}
+                <div className="hidden lg:block pl-2 border-l border-[var(--border-subtle)]">
+                  <span className="text-[0.65rem] text-[var(--text-dim)] font-mono block">Data Pipeline Mode</span>
+                  <span className="text-xs font-mono font-bold text-[var(--accent-amber)]">
+                    {platformDataEnabled ? 'Reddit & Discord Discussions + Gemini' : 'Pure AI Intelligence & Historical Memory'}
+                  </span>
                 </div>
+              </div>
+
+              {/* Start Button */}
+              <div className="flex items-center gap-3">
+                {isResearching && (
+                  <div className="font-mono text-xs text-[var(--text-dim)]">
+                    Elapsed: <span className="text-[var(--accent-amber)] font-bold">{formatTimer(elapsedSeconds)}</span>
+                  </div>
+                )}
+                <button
+                  onClick={handleStartResearch}
+                  disabled={isResearching || (photoCount === 0 && videoCount === 0)}
+                  className="py-2.5 px-6 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase tracking-wider rounded shadow-md transition flex items-center gap-2"
+                >
+                  <i className={`fa-solid ${isResearching ? 'fa-spinner fa-spin' : 'fa-play'}`}></i>
+                  <span>{isResearching ? 'RESEARCHING...' : 'RUN RESEARCH PIPELINE'}</span>
+                </button>
               </div>
             </div>
 
-            {/* Research Progress Panel */}
+            {/* Error Banner */}
+            {errorInfo && (
+              <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-xs font-mono text-red-300 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-bold text-red-200">
+                    <i className="fa-solid fa-triangle-exclamation text-red-400"></i>
+                    <span>{errorInfo.message}</span>
+                  </div>
+                  {errorInfo.details && (
+                    <button
+                      onClick={() => setShowTechDetails(!showTechDetails)}
+                      className="text-[0.65rem] underline text-red-300 hover:text-red-100"
+                    >
+                      {showTechDetails ? 'Hide technical details' : 'Show technical details'}
+                    </button>
+                  )}
+                </div>
+                {showTechDetails && errorInfo.details && (
+                  <pre className="p-3 bg-black/50 rounded overflow-x-auto text-[0.68rem] text-red-200 whitespace-pre-wrap leading-relaxed">
+                    {errorInfo.details}
+                  </pre>
+                )}
+              </div>
+            )}
+
+            {/* In-Progress Pipeline Card */}
             {isResearching && (
-              <div className="bg-gradient-to-b from-[var(--bg-card)] to-[var(--bg-panel)] border border-[var(--accent-cyan)] rounded-lg p-5 mb-4 shadow-xl">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-4">
-                  <div>
-                    <div className="text-[var(--accent-cyan)] font-brand text-sm font-bold uppercase tracking-wider flex items-center gap-2">
-                      <i className="fa-solid fa-circle-notch fa-spin"></i>
-                      Research Execution In Progress
-                    </div>
-                    <div className="text-[var(--text-muted)] font-mono text-xs mt-1">
-                      {progressMessage}
-                    </div>
+              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[var(--accent-amber)] font-bold uppercase">
+                    <span className="w-2 h-2 rounded-full bg-[var(--accent-amber)] animate-ping"></span>
+                    <span>{progressMessage}</span>
                   </div>
-                  <div className="text-[var(--accent-cyan)] font-mono font-bold text-sm bg-[var(--accent-cyan-soft)] px-3 py-1 rounded">
-                    {formatTimer(elapsedSeconds)}
-                  </div>
+                  <span className="text-[var(--text-dim)]">{progressPercent}%</span>
                 </div>
 
                 {/* Progress Bar */}
-                <div className="relative w-full h-1.5 bg-[var(--bg-input)] rounded-full overflow-hidden mb-5">
+                <div className="w-full h-2 bg-[var(--bg-input)] rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-[var(--accent-amber)] to-[var(--accent-cyan)] transition-all duration-300"
-                    style={{ width: `${Math.max(5, progressPercent)}%` }}
+                    className="h-full bg-[var(--accent-amber)] transition-all duration-300 ease-out"
+                    style={{ width: `${progressPercent}%` }}
                   ></div>
                 </div>
 
-                {/* Stages Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 font-mono text-[0.68rem]">
-                  {RESEARCH_STAGES.map((st, idx) => {
-                    const currentIdx = RESEARCH_STAGES.findIndex((s) => s.id === researchStage);
-                    const isCompleted = currentIdx >= 0 && idx < currentIdx;
-                    const isCurrent = st.id === researchStage;
-
+                {/* Stage Steps */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 pt-2">
+                  {RESEARCH_STAGES.map((st) => {
+                    const isDone = RESEARCH_STAGES.findIndex((s) => s.id === researchStage) > RESEARCH_STAGES.findIndex((s) => s.id === st.id);
+                    const isCurrent = researchStage === st.id;
                     return (
                       <div
                         key={st.id}
-                        className={`flex items-center gap-2 p-2 rounded border ${
-                          isCompleted
-                            ? 'text-[var(--status-success)] border-emerald-500/20 bg-emerald-500/5'
+                        className={`p-2 rounded text-[0.62rem] border transition flex items-center gap-1.5 ${
+                          isDone
+                            ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400'
                             : isCurrent
-                            ? 'text-[var(--accent-cyan)] border-[var(--accent-cyan)] bg-[var(--accent-cyan-soft)] font-bold'
-                            : 'text-[var(--text-dim)] border-[var(--border-subtle)] bg-[var(--bg-input)]'
+                            ? 'bg-amber-500/10 border-amber-500/30 text-[var(--accent-amber)] font-bold'
+                            : 'bg-[var(--bg-input)] border-[var(--border-subtle)] text-[var(--text-dim)]'
                         }`}
                       >
-                        {isCompleted ? (
-                          <i className="fa-solid fa-check"></i>
-                        ) : isCurrent ? (
-                          <i className="fa-solid fa-spinner fa-spin"></i>
-                        ) : (
-                          <i className="fa-regular fa-circle text-[0.6rem]"></i>
-                        )}
+                        <i
+                          className={`fa-solid ${
+                            isDone ? 'fa-check text-emerald-400' : isCurrent ? 'fa-spinner fa-spin text-[var(--accent-amber)]' : 'fa-circle text-[0.4rem]'
+                          }`}
+                        ></i>
                         <span className="truncate">{st.label}</span>
                       </div>
                     );
@@ -890,245 +1015,108 @@ export default function App() {
               </div>
             )}
 
-            {/* Error Panel */}
-            {errorInfo && !isResearching && (
-              <div className="bg-[var(--bg-card)] border border-[var(--status-error)] rounded-lg p-5 mb-4 shadow-lg">
-                <div className="flex items-center gap-2 text-[var(--status-error)] font-bold text-sm uppercase">
-                  <i className="fa-solid fa-triangle-exclamation"></i>
-                  Research Engine Failure
-                </div>
-                <div className="text-[var(--text-main)] text-xs mt-2 font-mono">
-                  {errorInfo.message}
-                </div>
-                <div className="flex gap-2 mt-4">
-                  <button
-                    onClick={handleStartResearch}
-                    className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-bold uppercase text-[var(--text-main)] inline-flex items-center gap-2"
-                  >
-                    <i className="fa-solid fa-rotate-right"></i>
-                    Retry
-                  </button>
-                  {errorInfo.details && (
-                    <button
-                      onClick={() => setShowTechDetails((prev) => !prev)}
-                      className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-bold uppercase text-[var(--text-dim)] inline-flex items-center gap-2"
-                    >
-                      <i className="fa-solid fa-code"></i>
-                      {showTechDetails ? 'Hide Technical Details' : 'Technical Details'}
-                    </button>
-                  )}
-                </div>
-                {showTechDetails && errorInfo.details && (
-                  <pre className="mt-3 p-3 bg-[var(--code-bg)] border border-[var(--border-color)] rounded text-[var(--status-error)] text-[0.68rem] font-mono whitespace-pre-wrap overflow-x-auto">
-                    {errorInfo.details}
-                  </pre>
-                )}
-              </div>
-            )}
-
-            {/* Report Summary Area */}
+            {/* Report Display */}
             {currentReport && !isResearching && (
-              <div>
-                {/* Meta & Metrics */}
-                <div className="mb-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                    <h1 className="text-xl font-bold font-brand uppercase tracking-wide">
-                      Today&apos;s Intelligence Report
-                    </h1>
-                    <div className="text-[var(--text-dim)] font-mono text-xs">
-                      DATE: {currentReport.date} | DURATION: {currentReport.duration || '—'}
-                    </div>
-                  </div>
-                  {currentReport.sources_processed?.length > 0 && (
-                    <div className="text-[var(--text-muted)] font-mono text-xs mt-1">
-                      SOURCES CHECKED: {currentReport.sources_processed.join(', ')}
-                    </div>
-                  )}
-                </div>
-
-                {/* Metrics 4-Card Grid */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-                  <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
-                    <span className="block text-[0.62rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase">
-                      Opportunities Found
-                    </span>
-                    <span className="block text-2xl font-bold font-mono text-[var(--accent-amber)] mt-1">
-                      {totalOpportunities}
-                    </span>
-                    <span className="block text-[0.68rem] text-[var(--text-dim)] mt-0.5">
-                      Evidence-backed items
-                    </span>
-                  </div>
-
-                  <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
-                    <span className="block text-[0.62rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase">
-                      Photo Ideas
-                    </span>
-                    <span className="block text-2xl font-bold font-mono text-[var(--accent-amber)] mt-1">
-                      {currentReport.photos?.length || 0}
-                    </span>
-                    <span className="block text-[0.68rem] text-[var(--text-dim)] mt-0.5">
-                      Requested: {currentReport.photo_count_requested}
-                    </span>
-                  </div>
-
-                  <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
-                    <span className="block text-[0.62rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase">
-                      Video Ideas
-                    </span>
-                    <span className="block text-2xl font-bold font-mono text-[var(--accent-cyan)] mt-1">
-                      {currentReport.videos?.length || 0}
-                    </span>
-                    <span className="block text-[0.68rem] text-[var(--text-dim)] mt-0.5">
-                      Requested: {currentReport.video_count_requested}
-                    </span>
-                  </div>
-
-                  <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
-                    <span className="block text-[0.62rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase">
-                      Research Duration
-                    </span>
-                    <span className="block text-2xl font-bold font-mono text-[var(--text-main)] mt-1">
-                      {currentReport.duration || '—'}
-                    </span>
-                    <span className="block text-[0.68rem] text-[var(--text-dim)] mt-0.5">
-                      Pipeline execution
-                    </span>
-                  </div>
-                </div>
-
-                {/* Evidence Summary & Warnings Banner */}
-                {currentReport.evidence_summary && (
-                  <div className="bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded-lg p-4 mb-6">
-                    <div className="text-[0.68rem] font-bold font-mono text-[var(--accent-amber)] tracking-wider uppercase mb-1 flex items-center gap-2">
-                      <i className="fa-solid fa-chart-pie"></i>
-                      Evidence & Strategic Synthesis Summary
-                    </div>
-                    <p className="text-xs text-[var(--text-main)] leading-relaxed font-mono">
-                      {currentReport.evidence_summary}
-                    </p>
-                    {currentReport.warnings?.length ? (
-                      <div className="mt-3 pt-2 border-t border-[var(--border-subtle)] space-y-1">
-                        {currentReport.warnings.map((w, i) => (
-                          <div key={i} className="text-[0.7rem] text-[var(--status-warning)] font-mono flex items-center gap-1.5">
-                            <i className="fa-solid fa-triangle-exclamation"></i>
-                            <span>{w}</span>
-                          </div>
-                        ))}
+              <div className="space-y-6 animate-fade-in">
+                {/* Report Header Card */}
+                <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 mb-4 border-b border-[var(--border-subtle)] gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded">
+                          {currentReport.status}
+                        </span>
+                        <h2 className="text-base font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
+                          Market Intelligence Report ({currentReport.date})
+                        </h2>
                       </div>
-                    ) : null}
-
-                    <div className="mt-3 pt-3 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
                       <span className="text-[0.68rem] text-[var(--text-dim)] font-mono">
-                        Job: <strong className="text-[var(--text-main)]">{currentReport.job_id}</strong> &middot; Raw evidence and report history preserved in SQLite.
+                        Job: {currentReport.job_id} &bull; Duration: {currentReport.duration}
                       </span>
-                      <button
-                        onClick={() => handleOpenJobEvidence(currentReport.job_id)}
-                        className="inline-flex items-center gap-1.5 py-1 px-3 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-xs font-mono text-[var(--accent-amber)] transition"
-                      >
-                        <i className="fa-solid fa-database"></i>
-                        <span>Inspect Stored Raw Evidence Signals</span>
-                      </button>
                     </div>
-                  </div>
-                )}
 
-                {currentReport.web_research && (
-                  <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4 mb-6">
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <div className="text-[0.68rem] font-bold font-mono text-[var(--accent-cyan)] tracking-wider uppercase flex items-center gap-2">
-                        <i className="fa-solid fa-globe"></i> Grounded Web Research Layer
+                    <button
+                      onClick={() => handleOpenJobEvidence(currentReport.job_id)}
+                      className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
+                    >
+                      <i className="fa-solid fa-database text-[var(--accent-amber)]"></i>
+                      <span>Inspect Raw SQLite Evidence</span>
+                    </button>
+                  </div>
+
+                  {/* Summary */}
+                  <p className="text-xs text-[var(--text-muted)] font-mono leading-relaxed mb-4">
+                    {currentReport.evidence_summary}
+                  </p>
+
+                  {/* Warnings */}
+                  {currentReport.warnings && currentReport.warnings.length > 0 && (
+                    <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded font-mono text-xs text-amber-200/90 space-y-1">
+                      <div className="font-bold text-[0.68rem] uppercase flex items-center gap-1.5 text-amber-300">
+                        <i className="fa-solid fa-triangle-exclamation"></i>
+                        <span>Research &amp; Evidence Observations:</span>
                       </div>
-                      <span className="text-[0.62rem] font-mono text-[var(--text-dim)]">
-                        {currentReport.web_research.sources?.length || 0} grounded sources · {currentReport.web_research.search_queries?.length || 0} search queries
-                      </span>
-                    </div>
-                    <p className="text-xs text-[var(--text-main)] leading-relaxed">{currentReport.web_research.summary}</p>
-                    {currentReport.web_research.findings?.length ? (
-                      <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2">
-                        {currentReport.web_research.findings.slice(0, 8).map((finding, i) => (
-                          <div key={i} className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded">
-                            <div className="text-[0.7rem] font-bold text-[var(--accent-cyan)] mb-1">{finding.topic}</div>
-                            <div className="text-[0.68rem] text-[var(--text-main)] leading-relaxed">{finding.observed_fact}</div>
-                            <div className="text-[0.66rem] text-[var(--text-muted)] mt-1.5">Commercial signal: {finding.commercial_signal}</div>
-                            <div className="text-[0.66rem] text-[var(--text-muted)] mt-1">Differentiation: {finding.supply_or_differentiation_signal}</div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {currentReport.web_research.sources?.length ? (
-                      <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
-                        <div className="text-[0.63rem] font-bold font-mono uppercase text-[var(--text-dim)] mb-2">Grounded sources</div>
-                        <div className="space-y-1">
-                          {currentReport.web_research.sources.slice(0, 12).map((source) => (
-                            <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="block text-[0.67rem] text-[var(--accent-cyan)] hover:underline truncate">
-                              [{source.id}] {source.title} · {source.url}
-                            </a>
-                          ))}
+                      {currentReport.warnings.map((w, idx) => (
+                        <div key={idx} className="text-[0.68rem] pl-4">
+                          &bull; {w}
                         </div>
-                      </div>
-                    ) : null}
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Photo Opportunities List */}
+                {currentReport.photos && currentReport.photos.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                        <i className="fa-solid fa-camera text-[var(--accent-amber)]"></i>
+                        <span>Photo Opportunities ({currentReport.photos.length})</span>
+                      </h3>
+                    </div>
+
+                    <div className="space-y-4">
+                      {currentReport.photos.map((photo, pIdx) => (
+                        <PhotoCard
+                          key={photo.id || pIdx}
+                          photo={photo}
+                          index={pIdx + 1}
+                          isOpen={!!openEvidenceMap[`p-${pIdx}`]}
+                          onToggleEvidence={() =>
+                            setOpenEvidenceMap((prev) => ({
+                              ...prev,
+                              [`p-${pIdx}`]: !prev[`p-${pIdx}`]
+                            }))
+                          }
+                          copiedKey={copiedKey}
+                          onCopy={copyToClipboard}
+                        />
+                      ))}
+                    </div>
                   </div>
                 )}
 
-                {/* Photo Opportunities Section */}
-                <section className="mb-8">
-                  <div className="flex items-center gap-2 text-[var(--accent-amber)] font-brand text-base font-bold uppercase tracking-wider mb-3">
-                    <i className="fa-solid fa-camera"></i>
-                    <span>Photo Opportunities</span>
-                    <span className="text-xs font-mono text-[var(--text-dim)]">
-                      ({currentReport.photos?.length || 0})
-                    </span>
-                  </div>
-
-                  {currentReport.photos?.length ? (
-                    <div className="flex flex-col gap-4">
-                      {currentReport.photos.map((photo, idx) => (
-                        <PhotoCard
-                          key={photo.id || `photo-${idx}`}
-                          photo={photo}
-                          index={idx + 1}
-                          isOpen={!!openEvidenceMap[`p-${idx}`]}
-                          onToggleEvidence={() =>
-                            setOpenEvidenceMap((prev) => ({
-                              ...prev,
-                              [`p-${idx}`]: !prev[`p-${idx}`]
-                            }))
-                          }
-                          copiedKey={copiedKey}
-                          onCopy={copyToClipboard}
-                        />
-                      ))}
+                {/* Video Opportunities List */}
+                {currentReport.videos && currentReport.videos.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                        <i className="fa-solid fa-video text-[var(--accent-cyan)]"></i>
+                        <span>Video Opportunities ({currentReport.videos.length})</span>
+                      </h3>
                     </div>
-                  ) : (
-                    <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded p-6 text-center text-xs text-[var(--text-dim)]">
-                      No photo opportunities returned for this run.
-                    </div>
-                  )}
-                </section>
 
-                {/* Video Opportunities Section */}
-                <section className="mb-8">
-                  <div className="flex items-center gap-2 text-[var(--accent-cyan)] font-brand text-base font-bold uppercase tracking-wider mb-3">
-                    <i className="fa-solid fa-video"></i>
-                    <span>Video Opportunities</span>
-                    <span className="text-xs font-mono text-[var(--text-dim)]">
-                      ({currentReport.videos?.length || 0})
-                    </span>
-                  </div>
-
-                  {currentReport.videos?.length ? (
-                    <div className="flex flex-col gap-4">
-                      {currentReport.videos.map((video, idx) => (
+                    <div className="space-y-4">
+                      {currentReport.videos.map((video, vIdx) => (
                         <VideoCard
-                          key={video.id || `video-${idx}`}
+                          key={video.id || vIdx}
                           video={video}
-                          index={idx + 1}
-                          isOpen={!!openEvidenceMap[`v-${idx}`]}
+                          index={vIdx + 1}
+                          isOpen={!!openEvidenceMap[`v-${vIdx}`]}
                           onToggleEvidence={() =>
                             setOpenEvidenceMap((prev) => ({
                               ...prev,
-                              [`v-${idx}`]: !prev[`v-${idx}`]
+                              [`v-${vIdx}`]: !prev[`v-${vIdx}`]
                             }))
                           }
                           copiedKey={copiedKey}
@@ -1136,26 +1124,21 @@ export default function App() {
                         />
                       ))}
                     </div>
-                  ) : (
-                    <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded p-6 text-center text-xs text-[var(--text-dim)]">
-                      No video opportunities returned for this run.
-                    </div>
-                  )}
-                </section>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Empty State before any research */}
-            {!currentReport && !isResearching && !errorInfo && (
-              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-12 text-center shadow-md">
-                <div className="text-4xl text-[var(--border-color)] mb-3">
-                  <i className="fa-solid fa-compass"></i>
-                </div>
-                <div className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] mb-1">
-                  No Report Generated Yet
-                </div>
-                <p className="max-w-md mx-auto text-xs text-[var(--text-muted)]">
-                  Configure your target photo and video quantities above, then click &ldquo;Start Today&apos;s Research&rdquo; to execute the market collection pipeline.
+            {/* Empty State */}
+            {!currentReport && !isResearching && (
+              <div className="p-12 text-center bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg font-mono space-y-3">
+                <i className="fa-solid fa-compass text-3xl text-[var(--accent-amber)]/60 mb-2"></i>
+                <h3 className="text-sm font-bold font-brand text-[var(--text-main)] uppercase">
+                  Ready to Extract Market Signals
+                </h3>
+                <p className="text-xs text-[var(--text-dim)] max-w-lg mx-auto leading-relaxed">
+                  Configure photo and video targets above, verify your Reddit/Discord sources in Settings, and click{' '}
+                  <strong className="text-[var(--accent-amber)]">&quot;RUN RESEARCH PIPELINE&quot;</strong> to generate data-driven stock content opportunities.
                 </p>
               </div>
             )}
@@ -1163,174 +1146,143 @@ export default function App() {
         )}
 
         {/* ========================================================
-             TAB: LIVE DATA FEEDS & PROBE
+             TAB 2: HUMAN SOURCES (REDDIT & DISCORD)
              ======================================================== */}
         {activeTab === 'sources' && (
           <div className="space-y-6">
-            {/* Control & Overview Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border-subtle)]">
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
-                    <i className="fa-solid fa-satellite-dish text-[var(--accent-amber)]"></i>
-                    Live Stock Market Data Feeds & Real-Time Probe
-                  </div>
-                  <p className="text-xs text-[var(--text-muted)] font-mono mt-1">
-                    Live network probing across Adobe Stock, Shutterstock, and Pond5 without mock data.
-                  </p>
-                </div>
+            {/* Top Overview Card */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                  <i className="fa-solid fa-comments text-[var(--accent-amber)]"></i>
+                  <span>Live Human Discussion Sources (Reddit &amp; Discord)</span>
+                </h3>
+                <p className="text-xs text-[var(--text-dim)] font-mono mt-0.5">
+                  Direct inspection of community subreddits and Discord bot channel streams.
+                </p>
+              </div>
 
+              <div className="flex items-center gap-2">
                 <button
                   onClick={() => runSourcesProbe(true)}
                   disabled={isProbing}
-                  className="inline-flex items-center gap-2 py-2 px-5 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold text-xs uppercase tracking-wider rounded shadow-[0_0_12px_var(--accent-amber-glow)] transition transform active:scale-95"
+                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase rounded transition flex items-center gap-2"
                 >
                   <i className={`fa-solid ${isProbing ? 'fa-spinner fa-spin' : 'fa-arrows-rotate'}`}></i>
-                  <span>{isProbing ? 'Probing Stock Providers...' : 'Test Feeds & Probe Live Data'}</span>
+                  <span>{isProbing ? 'PROBING...' : 'PROBE LIVE DATA'}</span>
                 </button>
-              </div>
-
-              {/* Status / Probe Meta Summary */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono">
-                  <span className="block text-[0.62rem] text-[var(--text-dim)] uppercase">Total Real Signals</span>
-                  <span className="block text-xl font-bold text-[var(--accent-amber)] mt-0.5">
-                    {probeData?.totalEvidenceCount ?? (isProbing ? '...' : 'Available')}
-                  </span>
-                </div>
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono">
-                  <span className="block text-[0.62rem] text-[var(--text-dim)] uppercase">Probed At</span>
-                  <span className="block text-xs font-bold text-[var(--text-main)] mt-1 truncate">
-                    {probeData?.probedAt ? new Date(probeData.probedAt).toLocaleTimeString() : 'Ready'}
-                  </span>
-                </div>
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono">
-                  <span className="block text-[0.62rem] text-[var(--text-dim)] uppercase">Probe Duration</span>
-                  <span className="block text-xs font-bold text-[var(--text-main)] mt-1">
-                    {probeData?.duration || '—'}
-                  </span>
-                </div>
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono">
-                  <span className="block text-[0.62rem] text-[var(--text-dim)] uppercase">Storage Target</span>
-                  <span className="block text-xs font-bold text-emerald-400 mt-1 truncate">
-                    SQLite Store
-                  </span>
-                </div>
               </div>
             </div>
 
-            {/* Providers 3-Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {['Adobe Stock', 'Shutterstock', 'Pond5'].map((name) => {
-                const srcData = probeData?.sources?.[name];
-                const overall = srcData?.overall || sourcesStatus[name] || 'NOT CHECKED';
-                const isAvail = overall === 'AVAILABLE';
-                const isBlocked = overall === 'BLOCKED';
-
-                return (
-                  <div
-                    key={name}
-                    className={`bg-[var(--bg-card)] border rounded-lg p-5 flex flex-col justify-between shadow-md transition ${
-                      isAvail
-                        ? 'border-emerald-500/30'
-                        : isBlocked
-                        ? 'border-red-500/30'
-                        : 'border-[var(--border-color)]'
+            {/* Sources Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Reddit Card */}
+              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow space-y-3 font-mono text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
+                  <div className="flex items-center gap-2">
+                    <i className="fa-brands fa-reddit text-orange-500 text-lg"></i>
+                    <span className="font-bold font-brand text-sm uppercase text-[var(--text-main)]">REDDIT COMMUNITIES</span>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[0.62rem] font-bold uppercase ${
+                      !platformDataEnabled
+                        ? 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                        : redditConfig.connected
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
                     }`}
                   >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-[var(--border-subtle)]">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-2.5 h-2.5 rounded-full ${
-                              isAvail
-                                ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]'
-                                : 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.6)]'
-                            }`}
-                          ></span>
-                          <h3 className="font-brand font-bold text-sm text-[var(--text-main)] uppercase tracking-wider">
-                            {name}
-                          </h3>
-                        </div>
-                        <span
-                          className={`text-[0.65rem] font-bold font-mono px-2 py-0.5 rounded uppercase ${
-                            isAvail
-                              ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/30'
-                              : 'text-red-400 bg-red-500/10 border border-red-500/30'
-                          }`}
-                        >
-                          {overall}
-                        </span>
-                      </div>
+                    {!platformDataEnabled ? 'DISABLED' : redditConfig.connected ? 'CONNECTED' : 'NOT CONNECTED'}
+                  </span>
+                </div>
 
-                      {/* Endpoints List */}
-                      <div className="space-y-2 mb-4 font-mono text-xs">
-                        <div className="text-[0.64rem] font-bold text-[var(--text-dim)] uppercase tracking-wider">
-                          Monitored Endpoints & Live Status
-                        </div>
-                        {srcData?.endpoints?.map((ep: any, idx: number) => {
-                          const epAvail = ep.status === 'AVAILABLE';
-                          return (
-                            <div
-                              key={idx}
-                              className="p-2 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded text-[0.7rem]"
-                            >
-                              <div className="flex items-center justify-between gap-1 mb-1">
-                                <span className="font-semibold text-[var(--text-main)] truncate">
-                                  {ep.subSource}
-                                </span>
-                                <span
-                                  className={`px-1.5 py-0.2 rounded text-[0.6rem] font-bold uppercase ${
-                                    epAvail
-                                      ? 'text-emerald-400 bg-emerald-500/10'
-                                      : 'text-amber-400 bg-amber-500/10'
-                                  }`}
-                                >
-                                  {ep.status}
-                                </span>
-                              </div>
-                              <div className="text-[0.62rem] text-[var(--text-dim)] truncate mb-1">
-                                <a
-                                  href={ep.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="hover:text-[var(--accent-amber)] transition inline-flex items-center gap-1"
-                                >
-                                  <span>{ep.url}</span>
-                                  <i className="fa-solid fa-arrow-up-right-from-square text-[0.55rem]"></i>
-                                </a>
-                              </div>
-                              {ep.evidenceCount > 0 && (
-                                <div className="text-[0.64rem] text-emerald-400">
-                                  &bull; {ep.evidenceCount} real marketplace signals extracted
-                                </div>
-                              )}
-                              {ep.notes && (
-                                <div className="text-[0.62rem] text-[var(--text-dim)] mt-0.5">
-                                  {ep.notes}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {(!srcData || !srcData.endpoints?.length) && (
-                          <div className="p-2.5 bg-[var(--bg-input)] rounded text-[0.7rem] text-[var(--text-dim)]">
-                            Click &ldquo;Test Feeds & Probe Live Data&rdquo; above to run real-time endpoint inspection.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {isBlocked && (
-                      <div className="p-2.5 bg-red-500/5 border border-red-500/20 rounded font-mono text-[0.65rem] text-red-300 leading-relaxed">
-                        <i className="fa-solid fa-shield-halved mr-1"></i>
-                        Security challenge detected on cloud IP. Zero fake data generated.
-                      </div>
-                    )}
+                <div className="space-y-1.5 text-[0.72rem]">
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Monitored Subreddits:</span>
+                    <span className="text-[var(--text-main)] font-bold">{redditConfig.subreddits?.length || 0} subreddits</span>
                   </div>
-                );
-              })}
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Research Timeframe:</span>
+                    <span className="text-[var(--accent-amber)] font-bold">{redditConfig.timeframe || '24h'} window</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Extracted Discussions:</span>
+                    <span className="text-emerald-400 font-bold">{redditConfig.collectedCount || 0} records</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Last Harvest:</span>
+                    <span className="text-[var(--text-muted)]">
+                      {redditConfig.lastCollectedAt ? new Date(redditConfig.lastCollectedAt).toLocaleTimeString() : 'Pending'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-1">
+                  {(redditConfig.subreddits || []).slice(0, 6).map((sub) => (
+                    <span key={sub} className="py-0.5 px-2 bg-[var(--bg-input)] rounded text-[0.65rem] text-[var(--text-muted)]">
+                      r/{sub}
+                    </span>
+                  ))}
+                  {(redditConfig.subreddits || []).length > 6 && (
+                    <span className="text-[0.65rem] text-[var(--text-dim)] p-0.5">
+                      +{(redditConfig.subreddits || []).length - 6} more
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Discord Card */}
+              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow space-y-3 font-mono text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
+                  <div className="flex items-center gap-2">
+                    <i className="fa-brands fa-discord text-indigo-400 text-lg"></i>
+                    <span className="font-bold font-brand text-sm uppercase text-[var(--text-main)]">DISCORD BOT STREAMS</span>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[0.62rem] font-bold uppercase ${
+                      !platformDataEnabled
+                        ? 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                        : discordConfig.connected
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                    }`}
+                  >
+                    {!platformDataEnabled ? 'DISABLED' : discordConfig.connected ? 'CONNECTED' : 'NOT CONNECTED'}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-[0.72rem]">
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Configured Guilds / Servers:</span>
+                    <span className="text-[var(--text-main)] font-bold">{discordConfig.guilds?.length || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Monitored Channels:</span>
+                    <span className="text-[var(--text-main)] font-bold">
+                      {discordConfig.guilds?.[0]?.channels?.length || 0} channels
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Research Timeframe:</span>
+                    <span className="text-[var(--accent-cyan)] font-bold">{discordConfig.timeframe || '24h'} window</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--text-dim)]">Extracted Messages:</span>
+                    <span className="text-emerald-400 font-bold">{discordConfig.collectedCount || 0} messages</span>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-1">
+                  {(discordConfig.guilds?.[0]?.channels || []).map((ch: any) => (
+                    <span key={ch.id} className="py-0.5 px-2 bg-[var(--bg-input)] rounded text-[0.65rem] text-[var(--text-muted)]">
+                      #{ch.name || ch.id}
+                    </span>
+                  ))}
+                  {!(discordConfig.guilds?.[0]?.channels || []).length && (
+                    <span className="text-[0.65rem] text-[var(--text-dim)]">No channels configured in Settings.</span>
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* Extracted Signals Stream */}
@@ -1339,16 +1291,16 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase text-[var(--text-main)]">
                     <i className="fa-solid fa-stream text-[var(--accent-amber)]"></i>
-                    Real Evidence Signal Stream
+                    Discussion Signal Stream
                   </div>
                   <span className="text-[0.68rem] text-[var(--text-dim)] font-mono">
-                    Live parsed data points feeding the Gemini strategic intelligence model.
+                    Real extracted human discussion points feeding the Gemini market intelligence analyst.
                   </span>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
                   <div className="flex items-center gap-1 bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-1">
-                    {['ALL', 'Adobe Stock', 'Shutterstock', 'Pond5'].map((f) => (
+                    {['ALL', 'Reddit', 'Discord'].map((f) => (
                       <button
                         key={f}
                         onClick={() => setProbeFilter(f)}
@@ -1389,8 +1341,9 @@ export default function App() {
                   if (probeSearch.trim()) {
                     const term = probeSearch.toLowerCase();
                     const titleMatch = (item.raw_title || '').toLowerCase().includes(term);
+                    const descMatch = (item.raw_description || '').toLowerCase().includes(term);
                     const kwMatch = (item.raw_keywords || []).some((k: string) => k.toLowerCase().includes(term));
-                    return titleMatch || kwMatch;
+                    return titleMatch || descMatch || kwMatch;
                   }
                   return true;
                 });
@@ -1399,7 +1352,7 @@ export default function App() {
                   return (
                     <div className="py-12 text-center text-xs font-mono text-[var(--accent-amber)]">
                       <i className="fa-solid fa-spinner fa-spin text-xl mb-2"></i>
-                      <div>Probing stock marketplace endpoints and extracting real tokens...</div>
+                      <div>Probing live Reddit &amp; Discord endpoints and extracting discussion tokens...</div>
                     </div>
                   );
                 }
@@ -1408,8 +1361,8 @@ export default function App() {
                   return (
                     <div className="p-8 text-center bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono text-xs text-[var(--text-dim)]">
                       {probeData
-                        ? 'No signals matched your filter criteria.'
-                        : 'No live probe executed yet. Click "Test Feeds & Probe Live Data" above to fetch live signals.'}
+                        ? 'No discussions matched your filter criteria.'
+                        : 'No live probe executed yet. Click "PROBE LIVE DATA" above to inspect live signals.'}
                     </div>
                   );
                 }
@@ -1425,53 +1378,37 @@ export default function App() {
                           <div className="flex items-center justify-between gap-2 mb-1.5">
                             <span
                               className={`text-[0.62rem] font-bold px-2 py-0.5 rounded uppercase ${
-                                item.source === 'Adobe Stock'
-                                  ? 'text-red-300 bg-red-500/10 border border-red-500/20'
-                                  : item.source === 'Shutterstock'
-                                  ? 'text-amber-300 bg-amber-500/10 border border-amber-500/20'
-                                  : 'text-cyan-300 bg-cyan-500/10 border border-cyan-500/20'
+                                item.source === 'Reddit'
+                                  ? 'text-orange-400 bg-orange-500/10 border border-orange-500/20'
+                                  : 'text-indigo-400 bg-indigo-500/10 border border-indigo-500/20'
                               }`}
                             >
                               {item.source}
                             </span>
                             <span className="text-[0.62rem] text-[var(--text-dim)] uppercase">
-                              {item.evidence_type?.replace(/_/g, ' ') || 'Market Observation'}
+                              {item.evidence_type?.replace(/_/g, ' ') || 'Discussion'}
                             </span>
                           </div>
 
-                          <h4 className="text-xs font-semibold text-[var(--text-main)] mb-2 leading-relaxed">
+                          <h4 className="text-xs font-semibold text-[var(--text-main)] mb-1.5 leading-relaxed">
                             {item.raw_title}
                           </h4>
 
                           {item.raw_description && (
-                            <p className="text-[0.7rem] text-[var(--text-muted)] mb-2 leading-normal">
+                            <p className="text-[0.7rem] text-[var(--text-muted)] mb-2 line-clamp-3 leading-normal">
                               {item.raw_description}
                             </p>
                           )}
-
-                          {item.raw_keywords?.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mb-2">
-                              {item.raw_keywords.slice(0, 8).map((kw: string, kIdx: number) => (
-                                <span
-                                  key={kIdx}
-                                  className="text-[0.62rem] py-0.5 px-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded text-[var(--text-dim)]"
-                                >
-                                  #{kw}
-                                </span>
-                              ))}
-                            </div>
-                          )}
                         </div>
 
-                        <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-[0.62rem] text-[var(--text-dim)] mt-2">
+                        <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-[0.62rem] text-[var(--text-dim)]">
                           <a
                             href={item.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="hover:text-[var(--accent-amber)] truncate max-w-[200px] inline-flex items-center gap-1"
+                            className="hover:text-[var(--accent-amber)] truncate max-w-[200px]"
                           >
-                            <span>{item.url}</span>
-                            <i className="fa-solid fa-arrow-up-right-from-square text-[0.55rem]"></i>
+                            {item.url}
                           </a>
                           <span>{item.collected_at ? new Date(item.collected_at).toLocaleTimeString() : ''}</span>
                         </div>
@@ -1485,111 +1422,97 @@ export default function App() {
         )}
 
         {/* ========================================================
-             TAB 3: INTELLIGENCE SETUP
+             TAB 3: INSTRUCTIONS & REJECTIONS
              ======================================================== */}
         {activeTab === 'instructions' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Gemini Analyst Instructions */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center gap-2 pb-3 mb-3 border-b border-[var(--border-subtle)] text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                <i className="fa-solid fa-brain text-[var(--accent-amber)]"></i>
-                Gemini Analyst Instructions
+          <div className="space-y-6 max-w-4xl">
+            {/* Custom Instructions */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                    <i className="fa-solid fa-sliders text-[var(--accent-amber)]"></i>
+                    <span>Analyst Guidance &amp; Niche Directives</span>
+                  </h3>
+                  <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                    Direct Gemini toward specific industries, visual styles, or buyer personas.
+                  </span>
+                </div>
               </div>
-              <p className="text-xs text-[var(--text-muted)] mb-3">
-                Persistent strategic instructions supplied to the Gemini analyst layer along with collected evidence.
-              </p>
 
               <textarea
                 value={instructionsText}
-                onChange={(e) => setInstructionsText(e.target.value.slice(0, 500))}
-                rows={7}
-                maxLength={500}
-                placeholder="e.g. Focus on European B2B sustainable supply chain concepts. Prioritize high-resolution macro photography with authentic natural lighting..."
-                className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-3 text-xs font-mono text-[var(--text-main)] outline-none resize-y"
-              />
+                onChange={(e) => setInstructionsText(e.target.value)}
+                placeholder="e.g. Focus heavily on authentic video editing b-roll, modern sustainable warehouse logistics, clean Scandinavian healthcare aesthetic..."
+                rows={4}
+                className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-3 text-xs font-mono text-[var(--text-main)] outline-none leading-relaxed"
+              ></textarea>
 
-              <div className="flex items-center justify-between gap-3 mt-3">
-                <span className="font-mono text-xs text-[var(--text-dim)]">
-                  {instructionsText.length} / 500
-                </span>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleClearInstructions}
-                    type="button"
-                    className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-bold uppercase text-[var(--text-main)]"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    onClick={handleSaveInstructions}
-                    type="button"
-                    className="py-1.5 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] rounded text-xs font-bold uppercase text-black"
-                  >
-                    Save Instructions
-                  </button>
-                </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveInstructions}
+                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold font-mono text-xs uppercase rounded transition"
+                >
+                  Save Instructions
+                </button>
+                <button
+                  onClick={handleClearInstructions}
+                  className="py-2 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition"
+                >
+                  Clear
+                </button>
               </div>
             </div>
 
-            {/* Adobe Not Accepted Content */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center gap-2 pb-3 mb-3 border-b border-[var(--border-subtle)] text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                <i className="fa-solid fa-ban text-[var(--status-error)]"></i>
-                Adobe Not Accepted Content
+            {/* Rejection / Exclusion Memory */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
+              <div className="pb-3 border-b border-[var(--border-subtle)]">
+                <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                  <i className="fa-solid fa-ban text-red-400"></i>
+                  <span>Exclusion &amp; Anti-Cliché Memory</span>
+                </h3>
+                <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                  Concepts, styles, or clichés strictly blocked from appearing in generated opportunities.
+                </span>
               </div>
-              <p className="text-xs text-[var(--text-muted)] mb-3">
-                Store rejected topics, reasons, or cliches to supply as strict negative constraints during research.
-              </p>
 
-              <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+              <div className="space-y-2">
                 {rejectedItems.map((item, idx) => (
                   <div key={idx} className="flex items-center gap-2">
-                    <span className="w-6 text-right font-mono text-xs text-[var(--text-dim)]">
-                      {idx + 1}.
-                    </span>
                     <input
                       type="text"
                       value={item}
                       onChange={(e) => handleAddOrUpdateRejection(idx, e.target.value)}
-                      className="flex-1 bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded px-2.5 py-1.5 text-xs font-mono text-[var(--text-main)] outline-none"
+                      className="flex-1 bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
                     />
                     <button
                       onClick={() => handleDeleteRejection(idx)}
-                      className="p-1.5 text-[var(--text-dim)] hover:text-[var(--status-error)] transition"
-                      title="Delete entry"
+                      className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-red-500/20 text-[var(--text-dim)] hover:text-red-400 border border-[var(--border-color)] rounded text-xs transition"
                     >
-                      <i className="fa-solid fa-xmark"></i>
+                      <i className="fa-solid fa-trash"></i>
                     </button>
                   </div>
                 ))}
 
-                {/* Dynamic Next Numbered Field */}
-                <div className="flex items-center gap-2 pt-1">
-                  <span className="w-6 text-right font-mono text-xs text-[var(--accent-amber)]">
-                    {rejectedItems.length + 1}.
-                  </span>
+                <div className="flex items-center gap-2 pt-2">
                   <input
                     type="text"
                     value={newRejectionInput}
                     onChange={(e) => setNewRejectionInput(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newRejectionInput.trim()) {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
                         handleAddOrUpdateRejection(rejectedItems.length, newRejectionInput);
                       }
                     }}
-                    placeholder="Enter rejected topic / concept and press Enter..."
-                    className="flex-1 bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded px-2.5 py-1.5 text-xs font-mono text-[var(--text-main)] outline-none"
+                    placeholder="Add concept to exclude (e.g. plastic ai smiles, generic handshakes)..."
+                    className="flex-1 bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
                   />
                   <button
-                    onClick={() => {
-                      if (newRejectionInput.trim()) {
-                        handleAddOrUpdateRejection(rejectedItems.length, newRejectionInput);
-                      }
-                    }}
-                    disabled={!newRejectionInput.trim()}
-                    className="py-1 px-2.5 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-mono text-[var(--accent-amber)] disabled:opacity-40"
+                    onClick={() => handleAddOrUpdateRejection(rejectedItems.length, newRejectionInput)}
+                    className="py-1.5 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs font-bold text-[var(--text-main)] transition"
                   >
-                    Add
+                    + Add
                   </button>
                 </div>
               </div>
@@ -1598,60 +1521,67 @@ export default function App() {
         )}
 
         {/* ========================================================
-             TAB 3: RESEARCH HISTORY
+             TAB 4: HISTORY
              ======================================================== */}
         {activeTab === 'history' && (
-          <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-            <div className="flex items-center justify-between pb-3 mb-4 border-b border-[var(--border-subtle)]">
-              <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                <i className="fa-solid fa-clock-rotate-left text-[var(--accent-amber)]"></i>
-                Historical Research Reports
+          <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
+              <div>
+                <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                  <i className="fa-solid fa-clock-rotate-left text-[var(--accent-amber)]"></i>
+                  <span>Research History (SQLite Store)</span>
+                </h3>
+                <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                  Previously completed market research reports and evidence sets.
+                </span>
               </div>
+
               <button
                 onClick={loadHistory}
                 disabled={isLoadingHistory}
-                className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-mono text-[var(--text-main)] inline-flex items-center gap-1.5"
+                className="py-1 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition flex items-center gap-1.5"
               >
-                <i className={`fa-solid fa-rotate ${isLoadingHistory ? 'fa-spin' : ''}`}></i>
-                Refresh
+                <i className={`fa-solid fa-arrows-rotate ${isLoadingHistory ? 'fa-spin' : ''}`}></i>
+                <span>Refresh</span>
               </button>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left font-mono text-xs border-collapse">
                 <thead>
-                  <tr className="bg-[var(--bg-panel)] text-[var(--text-dim)] text-[0.65rem] uppercase tracking-wider border-b border-[var(--border-subtle)]">
+                  <tr className="border-b border-[var(--border-color)] text-[var(--text-dim)] uppercase text-[0.65rem]">
                     <th className="p-3">Job ID</th>
                     <th className="p-3">Date</th>
-                    <th className="p-3">Photos</th>
-                    <th className="p-3">Videos</th>
+                    <th className="p-3">Photos / Videos</th>
+                    <th className="p-3">Major Discussion Topics</th>
                     <th className="p-3">Status</th>
-                    <th className="p-3 text-right">Actions</th>
+                    <th className="p-3 text-right">Action</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {historyList.length === 0 ? (
+                <tbody className="divide-y divide-[var(--border-subtle)]">
+                  {!historyList.length ? (
                     <tr>
-                      <td colSpan={6} className="text-center p-8 text-[var(--text-dim)]">
-                        {isLoadingHistory ? 'Loading history records...' : 'No historical reports recorded yet.'}
+                      <td colSpan={6} className="p-8 text-center text-[var(--text-dim)]">
+                        No previous research jobs found in database.
                       </td>
                     </tr>
                   ) : (
                     historyList.map((rec) => (
-                      <tr
-                        key={rec.job_id}
-                        className="border-b border-[var(--border-subtle)] hover:bg-[var(--bg-card-hover)] transition"
-                      >
-                        <td className="p-3 font-bold text-[var(--text-main)]">{rec.job_id}</td>
+                      <tr key={rec.job_id} className="hover:bg-[var(--bg-input)] transition">
+                        <td className="p-3 font-bold text-[var(--accent-amber)]">{rec.job_id}</td>
                         <td className="p-3 text-[var(--text-muted)]">{rec.date}</td>
-                        <td className="p-3 text-[var(--accent-amber)]">{rec.photo_count}</td>
-                        <td className="p-3 text-[var(--accent-cyan)]">{rec.video_count}</td>
+                        <td className="p-3">
+                          {rec.photo_count}P / {rec.video_count}V
+                        </td>
+                        <td className="p-3 text-[var(--text-main)] max-w-xs truncate">
+                          {(rec.major_topics || []).join(', ') || 'General Commercial'}
+                        </td>
                         <td className="p-3">
                           <span
-                            className={`inline-block px-2 py-0.5 rounded text-[0.62rem] font-bold ${
+                            className={`px-2 py-0.5 rounded text-[0.62rem] font-bold ${
                               rec.status === 'COMPLETED'
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                                : 'bg-red-500/10 text-red-400 border border-red-500/30'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-red-500/10 text-red-400 border border-red-500/20'
                             }`}
                           >
                             {rec.status}
@@ -1660,9 +1590,9 @@ export default function App() {
                         <td className="p-3 text-right">
                           <button
                             onClick={() => handleLoadHistoricalReport(rec.job_id)}
-                            className="py-1 px-2.5 bg-[var(--bg-panel)] hover:bg-[var(--bg-input)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded text-xs font-mono text-[var(--text-main)] transition"
+                            className="py-1 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded text-xs transition"
                           >
-                            View Report
+                            View
                           </button>
                         </td>
                       </tr>
@@ -1675,74 +1605,111 @@ export default function App() {
         )}
 
         {/* ========================================================
-             TAB 4: SYSTEM CONFIG
+             TAB 5: SYSTEM CONFIG
              ======================================================== */}
         {activeTab === 'settings' && (
           <div className="space-y-6 max-w-4xl">
-            {/* Gemini API & Strategic Engine Configuration */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center justify-between pb-3 mb-4 border-b border-[var(--border-subtle)]">
-                <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                  <i className="fa-solid fa-brain text-[var(--accent-amber)]"></i>
-                  Gemini API &amp; Strategic Engine Configuration
+            {/* PLATFORM DATA MASTER SWITCH */}
+            <div className="bg-[var(--bg-card)] border-2 border-[var(--accent-amber)]/40 rounded-lg p-5 shadow-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                    <i className="fa-solid fa-network-wired text-[var(--accent-amber)]"></i>
+                    <span>PLATFORM DATA (REDDIT &amp; DISCORD LIVE EXTRACTION)</span>
+                  </h3>
+                  <p className="text-xs text-[var(--text-muted)] font-mono mt-1 leading-relaxed">
+                    Controls whether AS-Radar-X connects to Reddit &amp; Discord to harvest raw human discussion needs, creator complaints, and missing assets.
+                  </p>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleTogglePlatformData}
+                  className={`py-2 px-5 rounded font-mono text-xs font-bold uppercase tracking-wider transition flex items-center gap-2 shadow-md ${
+                    platformDataEnabled
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-black'
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-600'
+                  }`}
+                >
+                  <i className={`fa-solid ${platformDataEnabled ? 'fa-toggle-on text-base' : 'fa-toggle-off text-base'}`}></i>
+                  <span>PLATFORM DATA: {platformDataEnabled ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+
+              <div className="p-3 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)] font-mono text-xs text-[var(--text-dim)]">
+                {platformDataEnabled ? (
+                  <span className="text-emerald-400">
+                    &bull; <strong>ON (Default):</strong> Research pipeline extracts discussions from your configured subreddits &amp; Discord channels and feeds real human signals into Gemini.
+                  </span>
+                ) : (
+                  <span className="text-amber-400">
+                    &bull; <strong>OFF:</strong> Skips Reddit &amp; Discord network calls. Operates using Gemini strategic AI intelligence, historical database memory, and custom instructions.
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* REDDIT RESEARCH SOURCES SECTION */}
+            <RedditConfigSection
+              config={redditConfig}
+              onSave={handleSaveRedditConfig}
+              showToast={showToast}
+              getApiUrl={getApiUrl}
+            />
+
+            {/* DISCORD RESEARCH SOURCES SECTION */}
+            <DiscordConfigSection
+              config={discordConfig}
+              onSave={handleSaveDiscordConfig}
+              showToast={showToast}
+              getApiUrl={getApiUrl}
+            />
+
+            {/* GEMINI STRATEGIC ENGINE CONFIGURATION */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[var(--border-subtle)] gap-2">
                 <div className="flex items-center gap-2">
-                  <span
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.65rem] font-mono font-bold uppercase ${
-                      geminiConfig.hasKey
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-red-500/10 text-red-400 border border-red-500/30'
-                    }`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        geminiConfig.hasKey ? 'bg-emerald-400' : 'bg-red-400'
-                      }`}
-                    ></span>
-                    {geminiConfig.hasKey ? 'API KEY CONFIGURED' : 'API KEY MISSING'}
-                  </span>
-                </div>
-              </div>
-
-              {/* API Key Status Row */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 font-mono text-xs">
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded">
-                  <span className="text-[var(--text-dim)] block text-[0.65rem] uppercase mb-1">
-                    Active Gemini Key (Masked)
-                  </span>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-[var(--text-main)] tracking-wider">
-                      {geminiConfig.activeKeyMasked}
-                    </span>
-                    <span className="text-[0.62rem] text-[var(--text-muted)]">
-                      {geminiConfig.hasCustomKey
-                        ? 'Source: SQLite Database'
-                        : geminiConfig.hasEnvKey
-                        ? 'Source: Server .env'
-                        : 'None'}
+                  <i className="fa-solid fa-brain text-[var(--accent-amber)] text-lg"></i>
+                  <div>
+                    <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
+                      GEMINI STRATEGIC ANALYST CONFIGURATION
+                    </h3>
+                    <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                      @google/genai SDK &bull; Grounded Market Intelligence &amp; Creative Direction
                     </span>
                   </div>
                 </div>
 
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded">
-                  <span className="text-[var(--text-dim)] block text-[0.65rem] uppercase mb-1">
-                    Strategic AI Model
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.65rem] font-mono font-bold uppercase ${
+                    geminiConfig.hasKey
+                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-red-500/10 text-red-400 border border-red-500/30'
+                  }`}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${geminiConfig.hasKey ? 'bg-emerald-400' : 'bg-red-400'}`}></span>
+                  {geminiConfig.hasKey ? 'ACTIVE KEY CONFIGURED' : 'KEY MISSING'}
+                </span>
+              </div>
+
+              {/* Status Info */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+                <div className="p-2.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded">
+                  <span className="text-[0.65rem] text-[var(--text-dim)] uppercase block">Active Masked Key</span>
+                  <span className="font-bold text-[var(--text-main)] tracking-wider">
+                    {geminiConfig.activeKeyMasked}
                   </span>
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-[var(--accent-amber)]">
-                      {geminiConfig.activeModel}
-                    </span>
-                    <span className="text-[0.62rem] text-[var(--text-muted)]">
-                      @google/genai SDK
-                    </span>
-                  </div>
+                </div>
+                <div className="p-2.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded">
+                  <span className="text-[0.65rem] text-[var(--text-dim)] uppercase block">Selected Model</span>
+                  <span className="font-bold text-[var(--accent-amber)]">{geminiConfig.activeModel}</span>
                 </div>
               </div>
 
-              {/* Test Feedback Message */}
+              {/* Feedback Message */}
               {geminiTestFeedback && (
                 <div
-                  className={`p-3 rounded border font-mono text-xs mb-4 flex items-start gap-2 ${
+                  className={`p-3 rounded border font-mono text-xs flex items-start gap-2 ${
                     geminiTestFeedback.success
                       ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                       : 'bg-red-500/10 border-red-500/30 text-red-300'
@@ -1760,35 +1727,26 @@ export default function App() {
                 </div>
               )}
 
-              {/* Form Controls */}
-              <div className="space-y-4 mb-5">
+              {/* Model Selector & Key Input */}
+              <div className="space-y-3 font-mono text-xs">
                 <div>
-                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-muted)] uppercase mb-1.5">
-                    Select Strategic Gemini Model
+                  <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold mb-1">
+                    Select Gemini Model
                   </label>
                   <select
                     value={selectedModelInput}
                     onChange={(e) => setSelectedModelInput(e.target.value)}
-                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2.5 text-xs font-mono text-[var(--text-main)] outline-none"
+                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2 text-xs text-[var(--text-main)] outline-none"
                   >
-                    <option value="gemini-3.8-flash">
-                      gemini-3.8-flash (Recommended: Ultra-fast synthesis &amp; commercial analysis)
-                    </option>
-                    <option value="gemini-3.1-pro-preview">
-                      gemini-3.1-pro-preview (Deep reasoning, complex stock market clustering)
-                    </option>
-                    <option value="gemini-3.1-flash-lite">
-                      gemini-3.1-flash-lite (Cost-effective low latency)
-                    </option>
-                    <option value="gemini-flash-latest">
-                      gemini-flash-latest (Stable alias)
-                    </option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash (Recommended: High-speed market synthesis)</option>
+                    <option value="gemini-3.7-flash">gemini-3.7-flash (Balanced speed &amp; reasoning)</option>
+                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Advanced complex reasoning)</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-muted)] uppercase mb-1.5 flex items-center justify-between">
-                    <span>Update / Enter Custom Gemini API Key</span>
+                  <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold mb-1 flex justify-between">
+                    <span>Enter Custom Gemini API Key</span>
                     <button
                       type="button"
                       onClick={() => setShowApiKeyText(!showApiKeyText)}
@@ -1797,227 +1755,47 @@ export default function App() {
                       {showApiKeyText ? 'Hide Key' : 'Show Key'}
                     </button>
                   </label>
-                  <div className="relative">
-                    <input
-                      type={showApiKeyText ? 'text' : 'password'}
-                      value={geminiApiKeyInput}
-                      onChange={(e) => setGeminiApiKeyInput(e.target.value)}
-                      placeholder={
-                        geminiConfig.hasKey
-                          ? 'Leave empty to keep current key, or paste new AIzaSy... key to update'
-                          : 'Paste your Gemini API Key here (AIzaSy...)'
-                      }
-                      className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2.5 text-xs font-mono text-[var(--text-main)] outline-none pr-10"
-                    />
-                  </div>
-                  <span className="block text-[0.68rem] text-[var(--text-dim)] mt-1 font-mono">
-                    Keys entered here are saved in server-side SQLite (<code className="text-[var(--text-muted)]">user_settings</code>) and proxied on the server.
-                  </span>
+                  <input
+                    type={showApiKeyText ? 'text' : 'password'}
+                    value={geminiApiKeyInput}
+                    onChange={(e) => setGeminiApiKeyInput(e.target.value)}
+                    placeholder="Enter key to update, or leave blank to keep current..."
+                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2 text-xs text-[var(--text-main)] outline-none"
+                  />
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[var(--border-subtle)]">
-                <button
-                  type="button"
-                  onClick={handleSaveGeminiConfig}
-                  disabled={isSavingGemini}
-                  className="py-2 px-5 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 rounded font-bold text-xs uppercase text-black flex items-center gap-2 transition"
-                >
-                  {isSavingGemini && <i className="fa-solid fa-spinner fa-spin"></i>}
-                  <span>Save Gemini Configuration</span>
-                </button>
-
+              {/* Actions */}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
                 <button
                   type="button"
                   onClick={handleTestGemini}
                   disabled={isTestingGemini}
-                  className="py-2 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-cyan)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
+                  className="py-2 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs font-bold text-[var(--text-main)] flex items-center gap-2 transition disabled:opacity-50"
                 >
-                  {isTestingGemini ? (
-                    <>
-                      <i className="fa-solid fa-circle-notch fa-spin text-[var(--accent-cyan)]"></i>
-                      <span>Testing Gemini Connection...</span>
-                    </>
-                  ) : (
-                    <>
-                      <i className="fa-solid fa-plug text-[var(--accent-cyan)]"></i>
-                      <span>Test Connection</span>
-                    </>
-                  )}
+                  <i className={`fa-solid ${isTestingGemini ? 'fa-spinner fa-spin' : 'fa-plug'} text-emerald-400`}></i>
+                  <span>{isTestingGemini ? 'Testing...' : 'TEST CONNECTION'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveGeminiConfig}
+                  disabled={isSavingGemini}
+                  className="py-2 px-5 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold font-mono text-xs uppercase rounded flex items-center gap-2 shadow transition disabled:opacity-50"
+                >
+                  <i className="fa-solid fa-floppy-disk"></i>
+                  <span>{isSavingGemini ? 'Saving...' : 'SAVE SETTINGS'}</span>
                 </button>
 
                 {geminiConfig.hasCustomKey && (
                   <button
                     type="button"
                     onClick={handleClearCustomApiKey}
-                    className="py-2 px-3 bg-transparent hover:bg-red-500/10 text-red-400 border border-transparent hover:border-red-500/20 rounded font-mono text-xs transition"
+                    className="py-2 px-3 text-[var(--text-dim)] hover:text-red-400 font-mono text-xs transition"
                   >
-                    Clear Custom Key (Reset to Env)
+                    Clear Custom Key
                   </button>
                 )}
-              </div>
-            </div>
-
-            {/* Architecture & API Key Location Guide Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center gap-2 pb-3 mb-3 border-b border-[var(--border-subtle)] text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                <i className="fa-solid fa-code text-[var(--accent-cyan)]"></i>
-                Gemini API Architecture &amp; Key Locations Guide
-              </div>
-              <p className="text-xs text-[var(--text-muted)] font-mono mb-4 leading-relaxed">
-                AS-Radar-X uses the modern <strong className="text-[var(--text-main)]">@google/genai</strong> SDK. Here is where the Gemini API is configured and how you can modify it:
-              </p>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs">
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded flex flex-col justify-between">
-                  <div>
-                    <div className="text-[var(--accent-amber)] font-bold mb-1 flex items-center gap-1.5">
-                      <i className="fa-solid fa-sliders"></i>
-                      1. In-App Web UI
-                    </div>
-                    <div className="text-[0.7rem] text-[var(--text-muted)] leading-relaxed">
-                      Configure right here on this screen. Saved directly into SQLite (<code className="text-[var(--text-dim)]">user_settings</code> table).
-                    </div>
-                  </div>
-                  <div className="mt-3 text-[0.62rem] text-emerald-400 font-bold">
-                    ✓ No server restart needed
-                  </div>
-                </div>
-
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded flex flex-col justify-between">
-                  <div>
-                    <div className="text-[var(--accent-cyan)] font-bold mb-1 flex items-center gap-1.5">
-                      <i className="fa-solid fa-file-shield"></i>
-                      2. Server .env File
-                    </div>
-                    <div className="text-[0.7rem] text-[var(--text-muted)] leading-relaxed">
-                      Set <code className="text-[var(--text-main)] bg-[var(--bg-panel)] px-1 py-0.5 rounded">GEMINI_API_KEY=AIzaSy...</code> in your server environment or <code className="text-[var(--text-dim)]">.env</code> file.
-                    </div>
-                  </div>
-                  <div className="mt-3 text-[0.62rem] text-emerald-400 font-bold">
-                    ✓ Default server fallback
-                  </div>
-                </div>
-
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded flex flex-col justify-between">
-                  <div>
-                    <div className="text-[var(--text-main)] font-bold mb-1 flex items-center gap-1.5">
-                      <i className="fa-solid fa-file-code"></i>
-                      3. Engine Codebase
-                    </div>
-                    <div className="text-[0.7rem] text-[var(--text-muted)] leading-relaxed">
-                      Located in <code className="text-[var(--accent-amber)]">server/gemini/analyst.ts</code>. Handles prompt synthesis, schema validation, and automatic multi-model failover.
-                    </div>
-                  </div>
-                  <div className="mt-3 text-[0.62rem] text-cyan-400 font-bold">
-                    ✓ Full pipeline control
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* General Infrastructure Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center gap-2 pb-3 mb-4 border-b border-[var(--border-subtle)] text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                <i className="fa-solid fa-server text-[var(--accent-amber)]"></i>
-                Backend &amp; Network Infrastructure
-              </div>
-
-              <div className="mb-4">
-                <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-muted)] uppercase mb-1.5">
-                  Backend API Base URL
-                </label>
-                <input
-                  type="text"
-                  value={apiBaseUrl}
-                  onChange={(e) => setApiBaseUrl(e.target.value)}
-                  placeholder="Leave blank for same-origin (/api)"
-                  className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2.5 text-xs font-mono text-[var(--text-main)] outline-none"
-                />
-                <span className="block text-[0.68rem] text-[var(--text-dim)] mt-1 font-mono">
-                  Example: https://your-backend.example.com (empty defaults to same-origin)
-                </span>
-              </div>
-
-              <div className="space-y-2 mb-6 font-mono text-xs">
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                  <div>
-                    <strong className="text-[var(--text-main)]">SQLite Database:</strong>
-                    <span className="text-[var(--text-dim)] ml-2">data/as_radar_x.sqlite (built-in Node.js v22 DatabaseSync)</span>
-                  </div>
-                  <span className="text-emerald-400 font-bold text-[0.65rem] uppercase">ACTIVE &amp; PERSISTED</span>
-                </div>
-
-                <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                  <div>
-                    <strong className="text-[var(--text-main)]">Live Data Collectors:</strong>
-                    <span className="text-[var(--text-dim)] ml-2">Adobe Stock, Shutterstock, Pond5 live extractors</span>
-                  </div>
-                  <span className="text-emerald-400 font-bold text-[0.65rem] uppercase">LIVE PROBING</span>
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    localStorage.setItem('as_radar_x_api_base', apiBaseUrl.trim());
-                    showToast('Backend configuration saved.');
-                  }}
-                  className="py-2 px-5 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] rounded font-bold text-xs uppercase text-black"
-                >
-                  Save URL Config
-                </button>
-                <button
-                  onClick={() => {
-                    setActiveTab('sources');
-                    runSourcesProbe(true);
-                  }}
-                  className="py-2 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)]"
-                >
-                  Probe Live Feeds Now
-                </button>
-              </div>
-            </div>
-
-            {/* Export & Download Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex items-center justify-between pb-3 mb-4 border-b border-[var(--border-subtle)]">
-                <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                  <i className="fa-solid fa-file-zipper text-[var(--accent-amber)]"></i>
-                  Export &amp; Download Complete Source Code (.ZIP)
-                </div>
-                <span className="text-[0.65rem] font-mono text-emerald-400 font-bold bg-emerald-500/10 px-2.5 py-0.5 rounded border border-emerald-500/20">
-                  READY FOR OFFLINE / LOCAL RUN
-                </span>
-              </div>
-
-              <p className="text-xs text-[var(--text-muted)] font-mono mb-4 leading-relaxed">
-                You can download the entire AS-Radar-X application (frontend, backend, SQLite integration, Gemini analyst, stock collectors, and test suites) as a single clean <strong>.ZIP</strong> archive and run it directly on your computer with Node.js.
-              </p>
-
-              <div className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono text-xs mb-4 space-y-2">
-                <div className="font-bold text-[var(--text-main)] text-[0.72rem] uppercase mb-1 flex items-center gap-1.5">
-                  <i className="fa-solid fa-terminal text-[var(--accent-cyan)]"></i>
-                  How to run locally on your computer:
-                </div>
-                <div className="text-[var(--text-dim)] pl-2 border-l-2 border-[var(--border-color)] space-y-1 text-[0.68rem]">
-                  <div>1. Extract the downloaded <code className="text-[var(--accent-amber)]">as-radar-x-project.zip</code> archive</div>
-                  <div>2. Open terminal in the project folder and run: <code className="text-[var(--text-main)] bg-[var(--bg-panel)] px-1 py-0.5 rounded">npm install</code></div>
-                  <div>3. Configure your key in <code className="text-[var(--text-main)]">.env</code>: <code className="text-[var(--accent-cyan)] bg-[var(--bg-panel)] px-1 py-0.5 rounded">GEMINI_API_KEY="AIzaSy..."</code></div>
-                  <div>4. Launch the application: <code className="text-[var(--text-main)] bg-[var(--bg-panel)] px-1 py-0.5 rounded">npm run dev</code></div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <a
-                  href={getApiUrl('/api/download-zip')}
-                  download="as-radar-x-project.zip"
-                  className="py-2.5 px-6 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold font-mono text-xs uppercase rounded flex items-center gap-2 shadow-md transition"
-                >
-                  <i className="fa-solid fa-cloud-arrow-down text-sm"></i>
-                  <span>Download Complete Project ZIP</span>
-                </a>
               </div>
             </div>
           </div>
@@ -2035,561 +1813,8 @@ export default function App() {
 
       {/* Footer */}
       <footer className="mt-16 text-center font-mono text-[0.66rem] text-[var(--text-dim)] tracking-wider">
-        AS-RADAR-X · STOCK CONTENT MARKET INTELLIGENCE · REAL EVIDENCE ENGINE
+        AS-RADAR-X &bull; STOCK CONTENT MARKET INTELLIGENCE &bull; REDDIT &amp; DISCORD HUMAN SIGNALS
       </footer>
-    </div>
-  );
-}
-
-// -------------------------------------------------------------
-// Photo Opportunity Card Component
-// -------------------------------------------------------------
-interface PhotoCardProps {
-  photo: PhotoOpportunity;
-  index: number;
-  isOpen: boolean;
-  onToggleEvidence: () => void;
-  copiedKey: string | null;
-  onCopy: (text: string, key: string) => void;
-}
-
-function PhotoCard({ photo, index, isOpen, onToggleEvidence, copiedKey, onCopy }: PhotoCardProps) {
-  const tagsList = Array.isArray(photo.tags) ? photo.tags : [];
-  const tagsCopyValue = tagsList.join(', ');
-
-  return (
-    <article className="relative bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 pl-6 shadow-md overflow-hidden before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1.5 before:bg-[var(--accent-amber)]">
-      <div className="flex flex-col sm:flex-row justify-between items-start gap-2 mb-2">
-        <div>
-          <span className="inline-block px-2 py-0.5 mb-1.5 rounded bg-amber-500/10 text-[var(--accent-amber)] text-[0.65rem] font-bold font-mono tracking-wider">
-            #{index} PHOTO OPPORTUNITY
-          </span>
-          <h3 className="text-base font-bold text-[var(--text-main)] leading-snug">
-            {photo.title || 'Untitled Opportunity'}
-          </h3>
-        </div>
-
-        <button
-          onClick={() => onCopy(photo.title, `p-title-${index}`)}
-          className="inline-flex items-center gap-1.5 py-1 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.64rem] font-mono text-[var(--text-muted)] transition"
-        >
-          <i className={`fa-regular ${copiedKey === `p-title-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-          <span>{copiedKey === `p-title-${index}` ? 'COPIED' : 'COPY TITLE'}</span>
-        </button>
-      </div>
-
-      {photo.description && (
-        <div className="mb-4">
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)]">DESCRIPTION</span>
-            <button onClick={() => onCopy(photo.description, `p-description-${index}`)} className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition">
-              <i className={`fa-regular ${copiedKey === `p-description-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `p-description-${index}` ? 'COPIED' : 'COPY DESCRIPTION'}</span>
-            </button>
-          </div>
-          <p className="text-xs text-[var(--text-muted)] leading-relaxed">{photo.description}</p>
-        </div>
-      )}
-
-      {/* Attributes Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono text-xs mb-4">
-        {photo.why_selected && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-bullseye text-[var(--accent-amber)]"></i>
-              Why Selected
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{photo.why_selected}</div>
-          </div>
-        )}
-
-        {photo.commercial_use && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-briefcase text-[var(--accent-amber)]"></i>
-              Commercial Use
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{photo.commercial_use}</div>
-          </div>
-        )}
-
-        {photo.visual_angle && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-eye text-[var(--accent-amber)]"></i>
-              Visual Angle / Gap
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{photo.visual_angle}</div>
-          </div>
-        )}
-
-        {photo.longevity && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-hourglass-half text-[var(--accent-amber)]"></i>
-              Longevity Profile
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{photo.longevity}</div>
-          </div>
-        )}
-
-        {photo.trend_dependence && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-chart-line text-[var(--accent-amber)]"></i>
-              Trend Dependence
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{photo.trend_dependence}</div>
-          </div>
-        )}
-      </div>
-
-      {photo.production_spec && Object.keys(photo.production_spec).length > 0 && (
-        <div className="p-3 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded mb-4">
-          <div className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--accent-amber)] mb-2">
-            Production Specification
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {Object.entries(photo.production_spec).map(([key, value]) => value ? (
-              <div key={key}>
-                <div className="text-[0.58rem] uppercase font-mono text-[var(--text-dim)] font-bold">{key.replace(/_/g, ' ')}</div>
-                <div className="text-[0.68rem] text-[var(--text-main)] mt-0.5">{String(value)}</div>
-              </div>
-            ) : null)}
-          </div>
-        </div>
-      )}
-
-      {photo.differentiation_strategy && (
-        <div className="p-3 bg-emerald-500/5 border border-emerald-500/20 rounded mb-4">
-          <div className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-emerald-400 mb-1">Why This Is Different</div>
-          <div className="text-xs text-[var(--text-main)] leading-relaxed">{photo.differentiation_strategy}</div>
-        </div>
-      )}
-
-      {/* AI Image Generation Prompt Box */}
-      {photo.prompt && (
-        <div className="p-3 bg-[var(--code-bg)] border border-[var(--border-color)] rounded mb-4">
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-1.5">
-              <i className="fa-solid fa-wand-magic-sparkles text-[var(--accent-amber)]"></i>
-              AI Image Generation Prompt
-            </span>
-            <button
-              onClick={() => onCopy(photo.prompt, `p-prompt-${index}`)}
-              className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition"
-            >
-              <i className={`fa-regular ${copiedKey === `p-prompt-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `p-prompt-${index}` ? 'COPIED' : 'COPY PROMPT'}</span>
-            </button>
-          </div>
-          <p className="font-mono text-xs text-[var(--text-main)] whitespace-pre-wrap leading-relaxed select-all">
-            {photo.prompt}
-          </p>
-        </div>
-      )}
-
-      {/* Stock Keywords / Tags */}
-      <div>
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-1.5">
-            <i className="fa-solid fa-tags text-[var(--accent-amber)]"></i>
-            Stock Keywords / Tags ({tagsList.length})
-          </span>
-          {tagsList.length > 0 && (
-            <button
-              onClick={() => onCopy(tagsCopyValue, `p-tags-${index}`)}
-              className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition"
-            >
-              <i className={`fa-regular ${copiedKey === `p-tags-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `p-tags-${index}` ? 'COPIED' : 'COPY TAGS'}</span>
-            </button>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {tagsList.map((tag, tIdx) => (
-            <span
-              key={tIdx}
-              className="inline-block py-0.5 px-2 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded text-[0.66rem] font-mono text-[var(--text-muted)]"
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* Traceable Market Evidence Accordion */}
-      {photo.evidence && Object.keys(photo.evidence).length > 0 && (
-        <div className="mt-4 pt-3 border-t border-dashed border-[var(--border-color)]">
-          <button
-            onClick={onToggleEvidence}
-            className="inline-flex items-center gap-1.5 py-1 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-mono text-[var(--text-main)] transition"
-          >
-            <i className="fa-solid fa-chart-line text-[var(--accent-amber)]"></i>
-            <span>{isOpen ? 'Hide Market Evidence' : 'View Market Evidence & Traceability'}</span>
-          </button>
-
-          {isOpen && (
-            <div className="mt-3 p-3 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded font-mono text-xs space-y-1.5">
-              <div className="text-[0.66rem] font-bold uppercase tracking-wider text-[var(--accent-amber)] mb-1">
-                Market Traceability Record
-              </div>
-              {Object.entries(photo.evidence).map(([k, v]) => (
-                <div key={k} className="text-[0.72rem] text-[var(--text-main)]">
-                  <strong className="text-[var(--text-dim)] uppercase">{k.replace(/_/g, ' ')}: </strong>
-                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </article>
-  );
-}
-
-// -------------------------------------------------------------
-// Video Opportunity Card Component
-// -------------------------------------------------------------
-interface VideoCardProps {
-  video: VideoOpportunity;
-  index: number;
-  isOpen: boolean;
-  onToggleEvidence: () => void;
-  copiedKey: string | null;
-  onCopy: (text: string, key: string) => void;
-}
-
-function VideoCard({ video, index, isOpen, onToggleEvidence, copiedKey, onCopy }: VideoCardProps) {
-  const tagsList = Array.isArray(video.tags) ? video.tags : [];
-  const tagsCopyValue = tagsList.join(', ');
-
-  return (
-    <article className="relative bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 pl-6 shadow-md overflow-hidden before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1.5 before:bg-[var(--accent-cyan)]">
-      <div className="flex flex-col sm:flex-row justify-between items-start gap-2 mb-2">
-        <div>
-          <span className="inline-block px-2 py-0.5 mb-1.5 rounded bg-[var(--accent-cyan-soft)] text-[var(--accent-cyan)] text-[0.65rem] font-bold font-mono tracking-wider">
-            #{index} VIDEO OPPORTUNITY
-          </span>
-          <h3 className="text-base font-bold text-[var(--text-main)] leading-snug">
-            {video.title || 'Untitled Opportunity'}
-          </h3>
-        </div>
-
-        <button
-          onClick={() => onCopy(video.title, `v-title-${index}`)}
-          className="inline-flex items-center gap-1.5 py-1 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-cyan)] border border-[var(--border-color)] rounded text-[0.64rem] font-mono text-[var(--text-muted)] transition"
-        >
-          <i className={`fa-regular ${copiedKey === `v-title-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-          <span>{copiedKey === `v-title-${index}` ? 'COPIED' : 'COPY TITLE'}</span>
-        </button>
-      </div>
-
-      {video.description && (
-        <div className="mb-4">
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)]">DESCRIPTION</span>
-            <button onClick={() => onCopy(video.description, `v-description-${index}`)} className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-cyan)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition">
-              <i className={`fa-regular ${copiedKey === `v-description-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `v-description-${index}` ? 'COPIED' : 'COPY DESCRIPTION'}</span>
-            </button>
-          </div>
-          <p className="text-xs text-[var(--text-muted)] leading-relaxed">{video.description}</p>
-        </div>
-      )}
-
-      {/* Video Attributes Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono text-xs mb-4">
-        {video.motion_value && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-film text-[var(--accent-cyan)]"></i>
-              Why Motion Matters
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.motion_value}</div>
-          </div>
-        )}
-
-        {video.commercial_use && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-briefcase text-[var(--accent-cyan)]"></i>
-              Commercial Use
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.commercial_use}</div>
-          </div>
-        )}
-
-        {video.motion_action && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-clapperboard text-[var(--accent-cyan)]"></i>
-              Choreography & Motion
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.motion_action}</div>
-          </div>
-        )}
-
-        {video.duration && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-stopwatch text-[var(--accent-cyan)]"></i>
-              Duration
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.duration}</div>
-          </div>
-        )}
-
-        {video.loop_potential && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-rotate text-[var(--accent-cyan)]"></i>
-              Loop Potential
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.loop_potential}</div>
-          </div>
-        )}
-
-        {video.aspect_ratio && (
-          <div>
-            <div className="text-[var(--text-dim)] text-[0.62rem] font-bold uppercase tracking-wider flex items-center gap-1.5">
-              <i className="fa-solid fa-expand text-[var(--accent-cyan)]"></i>
-              Aspect Ratio
-            </div>
-            <div className="text-[var(--text-main)] text-[0.76rem] mt-0.5">{video.aspect_ratio}</div>
-          </div>
-        )}
-      </div>
-
-      {video.production_spec && Object.keys(video.production_spec).length > 0 && (
-        <div className="p-3 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded mb-4">
-          <div className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--accent-cyan)] mb-2">
-            Production Specification
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {Object.entries(video.production_spec).map(([key, value]) => value ? (
-              <div key={key}>
-                <div className="text-[0.58rem] uppercase font-mono text-[var(--text-dim)] font-bold">{key.replace(/_/g, ' ')}</div>
-                <div className="text-[0.68rem] text-[var(--text-main)] mt-0.5">{String(value)}</div>
-              </div>
-            ) : null)}
-          </div>
-        </div>
-      )}
-
-      {video.differentiation_strategy && (
-        <div className="p-3 bg-cyan-500/5 border border-cyan-500/20 rounded mb-4">
-          <div className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--accent-cyan)] mb-1">Why This Is Different</div>
-          <div className="text-xs text-[var(--text-main)] leading-relaxed">{video.differentiation_strategy}</div>
-        </div>
-      )}
-
-      {/* AI Video Prompt Box */}
-      {video.prompt && (
-        <div className="p-3 bg-[var(--code-bg)] border border-[var(--border-color)] rounded mb-4">
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-1.5">
-              <i className="fa-solid fa-video text-[var(--accent-cyan)]"></i>
-              AI Video Generation Prompt
-            </span>
-            <button
-              onClick={() => onCopy(video.prompt, `v-prompt-${index}`)}
-              className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-cyan)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition"
-            >
-              <i className={`fa-regular ${copiedKey === `v-prompt-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `v-prompt-${index}` ? 'COPIED' : 'COPY PROMPT'}</span>
-            </button>
-          </div>
-          <p className="font-mono text-xs text-[var(--text-main)] whitespace-pre-wrap leading-relaxed select-all">
-            {video.prompt}
-          </p>
-        </div>
-      )}
-
-      {/* Tags */}
-      <div>
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <span className="text-[0.64rem] font-bold font-mono uppercase tracking-wider text-[var(--text-dim)] flex items-center gap-1.5">
-            <i className="fa-solid fa-tags text-[var(--accent-cyan)]"></i>
-            Stock Keywords / Tags ({tagsList.length})
-          </span>
-          {tagsList.length > 0 && (
-            <button
-              onClick={() => onCopy(tagsCopyValue, `v-tags-${index}`)}
-              className="inline-flex items-center gap-1.5 py-0.5 px-2 bg-[var(--bg-input)] hover:border-[var(--accent-cyan)] border border-[var(--border-color)] rounded text-[0.62rem] font-mono text-[var(--text-muted)] transition"
-            >
-              <i className={`fa-regular ${copiedKey === `v-tags-${index}` ? 'fa-check text-[var(--status-success)]' : 'fa-copy'}`}></i>
-              <span>{copiedKey === `v-tags-${index}` ? 'COPIED' : 'COPY TAGS'}</span>
-            </button>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {tagsList.map((tag, tIdx) => (
-            <span
-              key={tIdx}
-              className="inline-block py-0.5 px-2 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded text-[0.66rem] font-mono text-[var(--text-muted)]"
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* Evidence Accordion */}
-      {video.evidence && Object.keys(video.evidence).length > 0 && (
-        <div className="mt-4 pt-3 border-t border-dashed border-[var(--border-color)]">
-          <button
-            onClick={onToggleEvidence}
-            className="inline-flex items-center gap-1.5 py-1 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded text-xs font-mono text-[var(--text-main)] transition"
-          >
-            <i className="fa-solid fa-chart-line text-[var(--accent-cyan)]"></i>
-            <span>{isOpen ? 'Hide Market Evidence' : 'View Market Evidence & Traceability'}</span>
-          </button>
-
-          {isOpen && (
-            <div className="mt-3 p-3 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded font-mono text-xs space-y-1.5">
-              <div className="text-[0.66rem] font-bold uppercase tracking-wider text-[var(--accent-cyan)] mb-1">
-                Market Traceability Record
-              </div>
-              {Object.entries(video.evidence).map(([k, v]) => (
-                <div key={k} className="text-[0.72rem] text-[var(--text-main)]">
-                  <strong className="text-[var(--text-dim)] uppercase">{k.replace(/_/g, ' ')}: </strong>
-                  {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </article>
-  );
-}
-
-// -------------------------------------------------------------
-// Evidence Modal Component (Direct SQLite Inspection)
-// -------------------------------------------------------------
-function EvidenceModal({
-  isOpen,
-  jobId,
-  items,
-  isLoading,
-  onClose
-}: {
-  isOpen: boolean;
-  jobId: string;
-  items: any[];
-  isLoading: boolean;
-  onClose: () => void;
-}) {
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-      <div className="relative w-full max-w-4xl max-h-[85vh] bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg shadow-2xl flex flex-col overflow-hidden animate-fade-in">
-        {/* Modal Header */}
-        <div className="p-4 border-b border-[var(--border-subtle)] flex items-center justify-between bg-[var(--bg-panel)]">
-          <div className="flex items-center gap-2">
-            <i className="fa-solid fa-database text-[var(--accent-amber)]"></i>
-            <div>
-              <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
-                Stored Marketplace Evidence Signals (SQLite Store)
-              </h3>
-              <p className="text-[0.68rem] text-[var(--text-dim)] font-mono">
-                Job ID: {jobId} · {items.length} stored raw evidence records
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded bg-[var(--bg-input)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] text-[var(--text-main)] flex items-center justify-center transition"
-          >
-            <i className="fa-solid fa-xmark"></i>
-          </button>
-        </div>
-
-        {/* Modal Body */}
-        <div className="p-4 overflow-y-auto font-mono text-xs space-y-3">
-          {isLoading ? (
-            <div className="py-12 text-center text-[var(--accent-amber)]">
-              <i className="fa-solid fa-spinner fa-spin text-2xl mb-2"></i>
-              <div>Loading stored signals from SQLite database...</div>
-            </div>
-          ) : !items.length ? (
-            <div className="py-8 text-center text-[var(--text-dim)]">
-              No evidence signals found for this job ID in SQLite store.
-            </div>
-          ) : (
-            items.map((it, idx) => (
-              <div
-                key={idx}
-                className="p-3 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded hover:border-[var(--accent-amber)]/40 transition"
-              >
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <span
-                    className={`text-[0.65rem] font-bold px-2 py-0.5 rounded uppercase ${
-                      it.source === 'Adobe Stock'
-                        ? 'text-red-300 bg-red-500/10 border border-red-500/20'
-                        : it.source === 'Shutterstock'
-                        ? 'text-amber-300 bg-amber-500/10 border border-amber-500/20'
-                        : 'text-cyan-300 bg-cyan-500/10 border border-cyan-500/20'
-                    }`}
-                  >
-                    {it.source}
-                  </span>
-                  <span className="text-[0.62rem] text-[var(--text-dim)] uppercase">
-                    {it.evidence_type?.replace(/_/g, ' ') || 'Signal'}
-                  </span>
-                </div>
-
-                <div className="font-semibold text-xs text-[var(--text-main)] mb-1">
-                  {it.raw_title}
-                </div>
-
-                {it.raw_keywords?.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1 mb-2">
-                    {it.raw_keywords.map((kw: string, kIdx: number) => (
-                      <span
-                        key={kIdx}
-                        className="text-[0.62rem] py-0.5 px-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)] rounded text-[var(--text-dim)]"
-                      >
-                        #{kw}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                <div className="text-[0.64rem] text-[var(--text-dim)] truncate pt-1 border-t border-[var(--border-subtle)] flex items-center justify-between">
-                  <a
-                    href={it.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="hover:text-[var(--accent-amber)] truncate max-w-md inline-flex items-center gap-1"
-                  >
-                    <span>{it.url}</span>
-                    <i className="fa-solid fa-arrow-up-right-from-square text-[0.55rem]"></i>
-                  </a>
-                  <span>{it.collected_at ? new Date(it.collected_at).toLocaleTimeString() : ''}</span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Modal Footer */}
-        <div className="p-3 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)] flex items-center justify-between">
-          <span className="text-[0.65rem] text-[var(--text-dim)] font-mono">
-            SQLite Table: <code className="text-[var(--accent-amber)]">evidence_store</code>
-          </span>
-          <button
-            onClick={onClose}
-            className="py-1 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold text-xs uppercase rounded"
-          >
-            Close
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

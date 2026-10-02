@@ -1,0 +1,38 @@
+{
+  "instructions": "Test instruction",
+  "rejectedContent": [
+    "ai plastic faces"
+  ],
+  "redditConfig": {
+    "clientId": "",
+    "clientSecret": "",
+    "userAgent": "AS-Radar-X/2.0 (by /u/saradagreats)",
+    "subreddits": [
+      "StockPhotography",
+      "AdobeStock",
+      "Shutterstock",
+      "graphic_design",
+      "VideoEditing",
+      "editors",
+      "Midjourney",
+      "blender",
+      "vfx"
+    ],
+    "timeframe": "24h",
+    "collectPosts": true,
+    "collectComments": true,
+    "connected": false,
+    "lastCollectedAt": "2026-10-01T19:22:51.148Z",
+    "collectedCount": 0
+  },
+  "discordConfig": {
+    "botToken": "",
+    "guilds": [],
+    "timeframe": "24h",
+    "collectMessages": true,
+    "collectThreads": true,
+    "connected": false,
+    "collectedCount": 0
+  },
+  "platformDataEnabled": true
+}

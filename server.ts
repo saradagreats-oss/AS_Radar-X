@@ -1,11 +1,12 @@
 import 'dotenv/config';
-import archiver from 'archiver';
 import express, { Request, Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { researchCoordinator } from './server/researcher.js';
 import { storage } from './server/storage/database.js';
+import { RedditCollector } from './server/collectors/reddit.js';
+import { DiscordCollector } from './server/collectors/discord.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,7 +127,78 @@ app.get('/api/evidence/:jobId', (req: Request, res: Response) => {
   res.json({ job_id: jobId, evidence: items, count: items.length });
 });
 
-// 8. Live Sources Probe and Status
+// 8. Platform Data Configuration (Toggle)
+app.get('/api/platform-data', (_req: Request, res: Response) => {
+  res.json({ enabled: storage.getPlatformDataEnabled() });
+});
+
+app.post('/api/platform-data', (req: Request, res: Response) => {
+  const enabled = req.body?.enabled !== undefined ? !!req.body.enabled : true;
+  storage.savePlatformDataEnabled(enabled);
+  res.json({ success: true, enabled: storage.getPlatformDataEnabled() });
+});
+
+// 9. Reddit Configuration & Connection Testing
+app.get('/api/reddit/config', (_req: Request, res: Response) => {
+  res.json(storage.getMaskedRedditConfig());
+});
+
+app.post('/api/reddit/config', (req: Request, res: Response) => {
+  try {
+    const updated = storage.saveRedditConfig(req.body || {});
+    res.json({
+      success: true,
+      config: storage.getMaskedRedditConfig()
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed saving Reddit config' });
+  }
+});
+
+app.post('/api/reddit/test', async (req: Request, res: Response) => {
+  try {
+    const collector = new RedditCollector();
+    const result = await collector.testConnection(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Reddit connection test failed'
+    });
+  }
+});
+
+// 10. Discord Configuration & Connection Testing
+app.get('/api/discord/config', (_req: Request, res: Response) => {
+  res.json(storage.getMaskedDiscordConfig());
+});
+
+app.post('/api/discord/config', (req: Request, res: Response) => {
+  try {
+    const updated = storage.saveDiscordConfig(req.body || {});
+    res.json({
+      success: true,
+      config: storage.getMaskedDiscordConfig()
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed saving Discord config' });
+  }
+});
+
+app.post('/api/discord/test', async (req: Request, res: Response) => {
+  try {
+    const collector = new DiscordCollector();
+    const result = await collector.testConnection(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      message: err.message || 'Discord connection test failed'
+    });
+  }
+});
+
+// 11. Live Sources Probe and Status (Reddit & Discord)
 let cachedProbe: any = null;
 let lastProbeTime = 0;
 const PROBE_CACHE_TTL = 3 * 60 * 1000; // 3 minutes cache
@@ -137,27 +209,27 @@ async function runSourcesProbe(force: boolean = false) {
     return cachedProbe;
   }
 
-  const { ShutterstockCollector } = await import('./server/collectors/shutterstock.js');
-  const { AdobeStockCollector } = await import('./server/collectors/adobeStock.js');
-  const { Pond5Collector } = await import('./server/collectors/pond5.js');
-
-  const shutterCollector = new ShutterstockCollector();
-  const adobeCollector = new AdobeStockCollector();
-  const pondCollector = new Pond5Collector();
-  const testTopics = ['commercial enterprise', 'sustainable energy', 'modern healthcare'];
+  const redditCollector = new RedditCollector();
+  const discordCollector = new DiscordCollector();
+  const platformDataEnabled = storage.getPlatformDataEnabled();
 
   const startTime = Date.now();
-  const [shutterResults, adobeResults, pondResults] = await Promise.all([
-    shutterCollector.collect(testTopics),
-    adobeCollector.collect(testTopics),
-    pondCollector.collect(testTopics)
+  const [redditResults, discordResults] = await Promise.all([
+    redditCollector.collect(),
+    discordCollector.collect()
   ]);
   const duration = `${Math.round((Date.now() - startTime) / 1000)}s`;
 
   const mapResults = (name: string, results: any[]) => {
     const isAvail = results.some((r) => r.status === 'AVAILABLE');
     const isBlocked = results.every((r) => r.status === 'BLOCKED');
-    const overall = isAvail ? 'AVAILABLE' : isBlocked ? 'BLOCKED' : results[0]?.status || 'UNAVAILABLE';
+    const overall = !platformDataEnabled
+      ? 'DISABLED'
+      : isAvail
+        ? 'AVAILABLE'
+        : isBlocked
+          ? 'BLOCKED'
+          : results[0]?.status || 'UNAVAILABLE';
     const evidence = results.flatMap((r) => r.evidence || []);
 
     return {
@@ -166,7 +238,7 @@ async function runSourcesProbe(force: boolean = false) {
       endpoints: results.map((r) => ({
         subSource: r.subSource,
         url: r.url,
-        status: r.status,
+        status: !platformDataEnabled ? 'DISABLED' : r.status,
         evidenceCount: (r.evidence || []).length,
         notes: r.notes || r.error || undefined
       })),
@@ -175,18 +247,36 @@ async function runSourcesProbe(force: boolean = false) {
     };
   };
 
+  const redditConfig = storage.getRedditConfig();
+  const discordConfig = storage.getDiscordConfig();
+
   const responseData = {
     probedAt: new Date().toISOString(),
     duration,
+    platformDataEnabled,
     sources: {
-      'Adobe Stock': mapResults('Adobe Stock', adobeResults),
-      Shutterstock: mapResults('Shutterstock', shutterResults),
-      Pond5: mapResults('Pond5', pondResults)
+      Reddit: {
+        ...mapResults('Reddit', redditResults),
+        configuredSubreddits: redditConfig.subreddits,
+        timeframe: redditConfig.timeframe,
+        collectPosts: redditConfig.collectPosts,
+        collectComments: redditConfig.collectComments,
+        lastCollectedAt: redditConfig.lastCollectedAt,
+        totalCollectedCount: redditConfig.collectedCount || 0
+      },
+      Discord: {
+        ...mapResults('Discord', discordResults),
+        guildCount: (discordConfig.guilds || []).length,
+        timeframe: discordConfig.timeframe,
+        collectMessages: discordConfig.collectMessages,
+        collectThreads: discordConfig.collectThreads,
+        lastCollectedAt: discordConfig.lastCollectedAt,
+        totalCollectedCount: discordConfig.collectedCount || 0
+      }
     },
     totalEvidenceCount:
-      adobeResults.flatMap((r) => r.evidence).length +
-      shutterResults.flatMap((r) => r.evidence).length +
-      pondResults.flatMap((r) => r.evidence).length
+      redditResults.flatMap((r) => r.evidence).length +
+      discordResults.flatMap((r) => r.evidence).length
   };
 
   cachedProbe = responseData;
@@ -200,21 +290,21 @@ app.get('/api/sources/status', async (_req: Request, res: Response) => {
     const probe = await runSourcesProbe(false);
     res.json({
       probedAt: probe.probedAt,
+      platformDataEnabled: probe.platformDataEnabled,
       sources: {
-        'Adobe Stock': {
-          overall: probe.sources['Adobe Stock'].overall,
-          evidenceCount: probe.sources['Adobe Stock'].evidenceCount,
-          endpoints: probe.sources['Adobe Stock'].endpoints
+        Reddit: {
+          overall: probe.sources.Reddit.overall,
+          evidenceCount: probe.sources.Reddit.evidenceCount,
+          lastCollectedAt: probe.sources.Reddit.lastCollectedAt,
+          totalCollectedCount: probe.sources.Reddit.totalCollectedCount,
+          endpoints: probe.sources.Reddit.endpoints
         },
-        Shutterstock: {
-          overall: probe.sources['Shutterstock'].overall,
-          evidenceCount: probe.sources['Shutterstock'].evidenceCount,
-          endpoints: probe.sources['Shutterstock'].endpoints
-        },
-        Pond5: {
-          overall: probe.sources['Pond5'].overall,
-          evidenceCount: probe.sources['Pond5'].evidenceCount,
-          endpoints: probe.sources['Pond5'].endpoints
+        Discord: {
+          overall: probe.sources.Discord.overall,
+          evidenceCount: probe.sources.Discord.evidenceCount,
+          lastCollectedAt: probe.sources.Discord.lastCollectedAt,
+          totalCollectedCount: probe.sources.Discord.totalCollectedCount,
+          endpoints: probe.sources.Discord.endpoints
         }
       },
       totalEvidenceCount: probe.totalEvidenceCount
@@ -244,7 +334,7 @@ app.get('/api/sources/probe', async (req: Request, res: Response) => {
   }
 });
 
-// 9. Gemini Model and API Key Configuration
+// 12. Gemini Model and API Key Configuration
 app.get('/api/gemini/config', (_req: Request, res: Response) => {
   const customKey = storage.getCustomApiKey();
   const envKey = process.env.GEMINI_API_KEY || '';
@@ -319,60 +409,6 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
       success: false,
       error: err.message || 'Gemini connectivity test failed.'
     });
-  }
-});
-
-// 10. Download Complete Project Source Code as ZIP
-app.get('/api/download-zip', (_req: Request, res: Response) => {
-  try {
-    const archive = archiver('zip', {
-      zlib: { level: 9 }
-    });
-
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="as-radar-x-project.zip"');
-
-    archive.on('error', (err: any) => {
-      console.error('Archive error:', err);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed creating project archive' });
-      }
-    });
-
-    archive.pipe(res);
-
-    const rootDir = process.cwd();
-
-    // Include source code & configuration directories
-    archive.directory(path.join(rootDir, 'src'), 'src');
-    archive.directory(path.join(rootDir, 'server'), 'server');
-
-    // Include root configuration and setup files
-    const rootFiles = [
-      'package.json',
-      'tsconfig.json',
-      'vite.config.ts',
-      'server.ts',
-      'index.html',
-      'README.md',
-      '.env.example',
-      '.gitignore',
-      'metadata.json'
-    ];
-
-    for (const f of rootFiles) {
-      const fullPath = path.join(rootDir, f);
-      if (fs.existsSync(fullPath)) {
-        archive.file(fullPath, { name: f });
-      }
-    }
-
-    archive.finalize();
-  } catch (err: any) {
-    console.error('Download project zip error:', err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message || 'Internal error packaging project' });
-    }
   }
 });
 

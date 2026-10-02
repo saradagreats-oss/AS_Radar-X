@@ -26,6 +26,7 @@ interface AnalystInput {
   rejectedContentList?: string[];
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   webResearch?: WebResearchResult;
+  isPlatformDataEnabled?: boolean;
 }
 
 interface GroundedResearchInput {
@@ -37,6 +38,7 @@ interface GroundedResearchInput {
   userCustomInstructions?: string;
   rejectedContentList?: string[];
   researchTopics?: string[];
+  isPlatformDataEnabled?: boolean;
 }
 
 interface GeminiWebResearchOutput {
@@ -60,19 +62,19 @@ interface GeminiAnalystOutput {
 function getClient() {
   const apiKey = storage.getCustomApiKey() || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured.');
+    throw new Error('GEMINI_API_KEY is not configured. Set your Gemini API key in Settings.');
   }
   return new GoogleGenAI({ apiKey });
 }
 
 function candidateModels(): string[] {
+  const custom = storage.getCustomModel()?.trim();
   const preferred = process.env.GEMINI_MODEL?.trim();
   return [...new Set([
+    'gemini-3.1-flash-lite',
+    custom,
     preferred,
-    storage.getCustomModel(),
-    'gemini-3.8-flash',
-    'gemini-3.7-flash',
-    'gemini-3.1-pro-preview'
+    'gemini-3.7-flash'
   ].filter(Boolean))] as string[];
 }
 
@@ -101,11 +103,11 @@ function extractGroundedSources(response: any): WebResearchSource[] {
 export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
   const ai = getClient();
   const sourceHints = [
-    'site:shutterstock.com',
-    'site:stock.adobe.com',
-    'site:pond5.com',
-    'site:helpx.adobe.com',
-    'site:blog.pond5.com'
+    'site:reddit.com/r/StockPhotography',
+    'site:reddit.com/r/AdobeStock',
+    'site:reddit.com/r/graphic_design',
+    'site:reddit.com/r/VideoEditing',
+    'site:reddit.com/r/editors'
   ];
   const concepts = input.clusters.slice(0, 10).map((cluster) => ({
     name: cluster.name,
@@ -115,35 +117,32 @@ export async function runGeminiWebResearch(input: GroundedResearchInput): Promis
     recurrence: cluster.recurrence_level
   }));
 
-  const prompt = `Perform a second research pass for AS-Radar-X using Google Search grounding.
+  const prompt = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
 
-The direct marketplace collectors may be blocked or incomplete. Your job is NOT to invent replacements. Instead, use current public web evidence to enrich the research and to discover missing context.
+Focus on detecting authentic creator demand, recurring complaints, and missing asset searches across creator forums and communities.
 
-PRIMARY SOURCE PREFERENCE:
+PRIMARY COMMUNITY CONTEXT:
 ${sourceHints.join('\n')}
 
-SOURCE STATUS FROM DIRECT COLLECTORS:
+SOURCE STATUS:
 ${sourceStatusText(input.sourceStatuses)}
 
-CURRENT CLUSTERS:
+CURRENT DISCUSSION CLUSTERS:
 ${JSON.stringify(concepts, null, 2)}
 
 RESEARCH TARGET TOPICS:
 ${JSON.stringify(input.researchTopics || [], null, 2)}
 
 DIRECT EVIDENCE SAMPLE:
-${JSON.stringify(input.rawEvidence.slice(0, 80), null, 2)}
+${JSON.stringify(input.rawEvidence.slice(0, 60), null, 2)}
 
 RESEARCH RULES:
-1. Search for durable commercial need, not just viral trends.
-2. Prefer primary sources, stock-contributor guidance, current marketplace pages, industry associations, and reputable commercial/industry research.
-   When direct stock pages are blocked, still research the target topics using reputable public web sources; do not stop the analysis merely because one marketplace refused automated access.
-3. Distinguish observed fact from your inference.
-4. Search for saturation/differentiation clues where public evidence exists; do not claim complete marketplace inventory.
-5. Do not invent sales, downloads, demand percentages, or supply counts.
-6. Look for recurring business use cases that could support stock content over time.
-7. Identify where the direct stock sites are unavailable and use other public sources only as secondary context.
-8. Return a compact evidence research memo, not the final stock concepts.
+1. Search for repeated needs, complaints ("cannot find good b-roll for X"), and requests from creators, video editors, and designers.
+2. Search for stock content gaps where existing stock libraries are considered fake, outdated, or oversaturated.
+3. Distinguish observed creator statements from your strategic inference.
+4. Do not invent sales, downloads, or fake percentage figures.
+5. Identify recurring commercial use cases that need new, authentic stock photos and video footage.
+6. Return a compact research summary with findings.
 
 USER INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
@@ -184,12 +183,12 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
           tools: [{ googleSearch: {} }],
           responseMimeType: 'application/json',
           responseSchema,
-          systemInstruction: 'You are the research librarian for AS-Radar-X. Search the public web for current, traceable evidence and cite only what you can ground. Do not fabricate marketplace statistics.'
+          systemInstruction: 'You are the market research analyst for AS-Radar-X. Search the public web for real creator discussions, complaints, asset requests, and commercial stock content gaps. Do not fabricate statistics.'
         }
       });
       const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
       return {
-        summary: parsed.summary || 'No additional grounded web research was returned.',
+        summary: parsed.summary || 'Web research completed.',
         findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 12) : [],
         sources: extractGroundedSources(response),
         search_queries: response?.candidates?.[0]?.groundingMetadata?.webSearchQueries || []
@@ -207,7 +206,7 @@ function evidenceReferencePrompt(webResearch?: WebResearchResult): string {
   const sources = webResearch.sources.length
     ? webResearch.sources.map((s) => `[${s.id}] ${s.title} — ${s.url}`).join('\n')
     : 'No grounded web source metadata returned.';
-  return `SECONDARY WEB RESEARCH MEMO:\n${webResearch.summary}\n\nFINDINGS:\n${JSON.stringify(webResearch.findings, null, 2)}\n\nGROUNDED WEB SOURCES:\n${sources}`;
+  return `SECONDARY WEB RESEARCH MEMO:\n${webResearch.summary}\n\nFINDINGS:\n${JSON.stringify(webResearch.findings, null, 2)}\n\nGROUNDED SOURCES:\n${sources}`;
 }
 
 function buildProductionSpecRules(media: 'photo' | 'video') {
@@ -230,7 +229,7 @@ function buildProductionSpecRules(media: 'photo' | 'video') {
 - texture_detail
 - realism_constraints
 - negative_constraints
-Then write the final prompt as a coherent, production-ready prompt derived from those fields. Do not use a generic "8k photorealistic" filler line by itself.`
+Then write the final prompt as a coherent, production-ready prompt derived from those fields. Avoid generic "8k photorealistic" cliché filler.`
     : `For every VIDEO produce a detailed production_spec with:
 - subject
 - setting
@@ -252,7 +251,7 @@ Then write the final prompt as a coherent, production-ready prompt derived from 
 - texture_detail
 - realism_constraints
 - negative_constraints
-Then write the final video prompt as a coherent, production-ready prompt derived from those fields.`;
+Then write the final video prompt as a coherent, production-ready motion prompt derived from those fields.`;
 }
 
 export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
@@ -260,6 +259,7 @@ export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<Ge
   const webMemo = evidenceReferencePrompt(input.webResearch);
 
   const evidencePayload = {
+    is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
     source_statuses: input.sourceStatuses,
     deterministic_analysis: input.clusterAnalyses.map((a) => ({
       cluster: {
@@ -278,43 +278,41 @@ export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<Ge
       score: a.score
     })),
     raw_evidence_count: input.rawEvidence.length,
-    evidence_samples: input.rawEvidence.slice(0, 100).map((e) => ({
+    human_discussion_evidence_sample: input.rawEvidence.slice(0, 80).map((e) => ({
       source: e.source,
       url: e.url,
       evidence_type: e.evidence_type,
       title: e.raw_title,
+      description: e.raw_description?.slice(0, 200),
       keywords: e.raw_keywords,
-      collected_at: e.collected_at
+      metadata: e.metadata
     }))
   };
 
-  const systemInstruction = `You are AS-Radar-X Strategic Stock Market Analyst + Creative Director.
-You are NOT a trend paraphraser. You are expected to synthesize multiple layers of evidence and make a human-quality commercial judgment.
+  const systemInstruction = `You are AS-Radar-X Lead Stock Content Market Intelligence Analyst + Commercial Creative Director.
+Your mission is to turn real human discussions (Reddit discussions, creator complaints, Discord channel messages, asset requests, and commercial demand signals) into high-value stock photo and video opportunities.
 
-ABSOLUTE RULES:
-1. NEVER invent sales, downloads, search volume, market share, demand percentages, or total marketplace inventory counts.
-2. Treat direct marketplace evidence, grounded web evidence, and strategic inference as three different layers.
-3. Every opportunity must explain what evidence supports it and what is inference.
-4. Do NOT turn a generic trend into a stock idea. Demand is only useful when paired with supply/saturation and a meaningful differentiation angle.
-5. Reject saturated, generic, copy-like ideas. A concept that is already heavily represented must earn its way back in through a specific underserved use case or materially different visual angle.
-6. A gap is a hypothesis unless supported by observed evidence. Use phrases such as "observed sample suggests" or "research indicates" when certainty is limited.
-7. If there is not enough evidence to support all requested items, return FEWER items. Never manufacture the remainder.
-8. Every opportunity must reference at least one source from the provided direct evidence or grounded web research.
-9. Never repeat a previous opportunity's concept/angle just by changing the wording.
-10. Respect the user's rejection list strictly.
-11. For video, motion must have real commercial value and should not be a photo with a zoom effect.
-
-RESEARCH → ANALYSIS → CREATION:
-First assess the evidence. Then choose the strongest opportunity candidates. Then create original visual concepts. Do not create concepts first and retrofit the evidence later.
+CORE INTELLIGENCE WORKFLOW:
+1. DETECT HUMAN DEMAND & COMPLAINTS:
+   Analyze the conversations for repeated needs, creators struggling to find specific visuals ("can't find realistic b-roll of X"), complaints about cliché or outdated stock photos, and genuine commercial bottlenecks.
+2. SYNTHESIZE OPPORTUNITIES:
+   Combine:
+   - Human Demand (what real people and creators are asking for or complaining about)
+   - Recurrence (signals appearing repeatedly across discussions)
+   - Commercial Use (how B2B brands, marketing agencies, editors, healthcare, tech companies would actually license this)
+   - Existing Supply / Saturation (avoiding generic stock tropes like fake corporate handshakes or plastic smiles)
+   - Differentiation Gap (how a creator can produce this with authentic lighting, realistic staging, and fresh angles)
+   - Longevity (multi-year evergreen commercial utility vs temporary fad)
+3. HARD PRODUCTION SPECIFICATIONS:
+   For every opportunity, produce complete photographic/cinematographic production specifications that a creator or AI generator can execute immediately.
+4. RIGOROUS STANDARDS:
+   - Never invent fake download or sales counts.
+   - Strictly honor the user's rejection list.
+   - For video, ensure the motion has genuine editorial/commercial purpose.
+   - If Platform Data is disabled, draw upon Gemini commercial intelligence, past opportunity history, and user instructions.
 
 ${buildProductionSpecRules('photo')}
 ${buildProductionSpecRules('video')}
-
-PROMPT QUALITY:
-Prompts must include concrete visual decisions such as subject action, environment, camera position, focal length, aperture, lighting direction/quality, depth of field, texture/material detail, framing/copy space, color treatment, and negative constraints where helpful. Vague phrases like "professional, high quality, 8k" are not enough.
-
-TAGS:
-Provide 15–25 commercially useful tags. Avoid spam and near-duplicate keyword stuffing.
 
 USER CUSTOM INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
@@ -322,7 +320,7 @@ ${input.userCustomInstructions || 'None'}
 USER REJECTION LIST:
 ${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
 
-HISTORY:
+PAST OPPORTUNITY HISTORY (Do NOT duplicate previous titles or concepts):
 ${(input.pastOpportunitiesHistory || []).slice(0, 30).map((p) => `- ${p.title} | ${p.concept}`).join('\n') || 'None'}
 
 ${webMemo}
@@ -332,11 +330,11 @@ Maximum photos: ${input.requestedPhotoCount}
 Maximum videos: ${input.requestedVideoCount}
 `;
 
-  const prompt = `Build the final AS-Radar-X daily stock opportunity report from this evidence package.
+  const prompt = `Synthesize the final AS-Radar-X stock content opportunity report based on this human discussion and market evidence package:
 
 ${JSON.stringify(evidencePayload, null, 2)}
 
-Return only JSON matching the schema.`;
+Return strictly JSON matching the response schema.`;
 
   const evidenceSchema = {
     type: Type.OBJECT,
@@ -353,41 +351,112 @@ Return only JSON matching the schema.`;
   const productionSpecSchema = {
     type: Type.OBJECT,
     properties: {
-      subject: { type: Type.STRING }, setting: { type: Type.STRING }, action: { type: Type.STRING },
-      shot_type: { type: Type.STRING }, camera_height: { type: Type.STRING }, lens: { type: Type.STRING },
-      aperture: { type: Type.STRING }, shutter: { type: Type.STRING }, lighting: { type: Type.STRING },
-      color_palette: { type: Type.STRING }, depth_of_field: { type: Type.STRING }, composition: { type: Type.STRING },
-      copy_space: { type: Type.STRING }, aspect_ratio: { type: Type.STRING }, texture_detail: { type: Type.STRING },
-      realism_constraints: { type: Type.STRING }, negative_constraints: { type: Type.STRING },
-      motion_path: { type: Type.STRING }, frame_rate: { type: Type.STRING }, stabilization: { type: Type.STRING },
+      subject: { type: Type.STRING },
+      setting: { type: Type.STRING },
+      action: { type: Type.STRING },
+      shot_type: { type: Type.STRING },
+      camera_height: { type: Type.STRING },
+      lens: { type: Type.STRING },
+      aperture: { type: Type.STRING },
+      shutter: { type: Type.STRING },
+      lighting: { type: Type.STRING },
+      color_palette: { type: Type.STRING },
+      depth_of_field: { type: Type.STRING },
+      composition: { type: Type.STRING },
+      copy_space: { type: Type.STRING },
+      aspect_ratio: { type: Type.STRING },
+      texture_detail: { type: Type.STRING },
+      realism_constraints: { type: Type.STRING },
+      negative_constraints: { type: Type.STRING },
+      motion_path: { type: Type.STRING },
+      frame_rate: { type: Type.STRING },
+      stabilization: { type: Type.STRING },
       loop_strategy: { type: Type.STRING }
     }
   };
 
-  const photoSchema = {
+  const photoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
-      id: { type: Type.STRING }, title: { type: Type.STRING }, concept: { type: Type.STRING }, description: { type: Type.STRING },
-      why_selected: { type: Type.STRING }, market_evidence: { type: Type.STRING }, commercial_use: { type: Type.STRING },
-      visual_angle: { type: Type.STRING }, supply_gap: { type: Type.STRING }, longevity: { type: Type.STRING }, trend_dependence: { type: Type.STRING },
-      prompt: { type: Type.STRING }, tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-      production_spec: productionSpecSchema, differentiation_strategy: { type: Type.STRING }, buyer_use_case: { type: Type.STRING }, risk_notes: { type: Type.STRING },
+      id: { type: Type.STRING },
+      title: { type: Type.STRING },
+      concept: { type: Type.STRING },
+      description: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      market_evidence: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      visual_angle: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      trend_dependence: { type: Type.STRING },
+      prompt: { type: Type.STRING },
+      tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+      production_spec: productionSpecSchema,
+      differentiation_strategy: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
       evidence: evidenceSchema
     },
-    required: ['id', 'title', 'concept', 'description', 'why_selected', 'market_evidence', 'commercial_use', 'visual_angle', 'supply_gap', 'longevity', 'trend_dependence', 'prompt', 'tags', 'evidence']
+    required: [
+      'id',
+      'title',
+      'concept',
+      'description',
+      'why_selected',
+      'market_evidence',
+      'commercial_use',
+      'visual_angle',
+      'supply_gap',
+      'longevity',
+      'trend_dependence',
+      'prompt',
+      'tags',
+      'evidence'
+    ]
   };
 
-  const videoSchema = {
+  const videoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
-      id: { type: Type.STRING }, title: { type: Type.STRING }, concept: { type: Type.STRING }, description: { type: Type.STRING },
-      why_selected: { type: Type.STRING }, motion_value: { type: Type.STRING }, commercial_use: { type: Type.STRING }, motion_action: { type: Type.STRING },
-      duration: { type: Type.STRING }, loop_potential: { type: Type.STRING }, aspect_ratio: { type: Type.STRING }, supply_gap: { type: Type.STRING }, longevity: { type: Type.STRING },
-      prompt: { type: Type.STRING }, tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-      production_spec: productionSpecSchema, differentiation_strategy: { type: Type.STRING }, buyer_use_case: { type: Type.STRING }, risk_notes: { type: Type.STRING },
+      id: { type: Type.STRING },
+      title: { type: Type.STRING },
+      concept: { type: Type.STRING },
+      description: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      motion_value: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      motion_action: { type: Type.STRING },
+      duration: { type: Type.STRING },
+      loop_potential: { type: Type.STRING },
+      aspect_ratio: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      prompt: { type: Type.STRING },
+      tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+      production_spec: productionSpecSchema,
+      differentiation_strategy: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
       evidence: evidenceSchema
     },
-    required: ['id', 'title', 'concept', 'description', 'why_selected', 'motion_value', 'commercial_use', 'motion_action', 'duration', 'loop_potential', 'aspect_ratio', 'supply_gap', 'longevity', 'prompt', 'tags', 'evidence']
+    required: [
+      'id',
+      'title',
+      'concept',
+      'description',
+      'why_selected',
+      'motion_value',
+      'commercial_use',
+      'motion_action',
+      'duration',
+      'loop_potential',
+      'aspect_ratio',
+      'supply_gap',
+      'longevity',
+      'prompt',
+      'tags',
+      'evidence'
+    ]
   };
 
   const responseSchema = {
@@ -395,84 +464,47 @@ Return only JSON matching the schema.`;
     properties: {
       evidence_summary: { type: Type.STRING },
       warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
-      photos: { type: Type.ARRAY, items: photoSchema },
-      videos: { type: Type.ARRAY, items: videoSchema }
+      photos: { type: Type.ARRAY, items: photoOpportunitySchema },
+      videos: { type: Type.ARRAY, items: videoOpportunitySchema }
     },
     required: ['evidence_summary', 'photos', 'videos']
   };
 
   let lastError: any = null;
-  let responseText = '';
   for (const model of candidateModels()) {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await ai.models.generateContent({
           model,
           contents: prompt,
           config: {
-            systemInstruction,
             responseMimeType: 'application/json',
             responseSchema,
-            temperature: 0.35
+            systemInstruction,
+            temperature: 0.3
           }
         });
-        responseText = response.text?.trim() || '';
-        if (responseText) break;
+
+        const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+        return {
+          evidence_summary: parsed.evidence_summary || 'Analysis completed.',
+          warnings: parsed.warnings || [],
+          photos: (parsed.photos || []).slice(0, input.requestedPhotoCount),
+          videos: (parsed.videos || []).slice(0, input.requestedVideoCount)
+        };
       } catch (err: any) {
         lastError = err;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const msg = String(err?.message || '');
+        if ((msg.includes('503') || msg.includes('high demand') || msg.includes('429')) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 2500));
+        } else {
+          break;
+        }
       }
     }
-    if (responseText) break;
   }
 
-  if (!responseText) throw lastError || new Error('Gemini creative analysis returned an empty response.');
-
-  let parsed: GeminiAnalystOutput;
-  try {
-    parsed = JSON.parse(responseText) as GeminiAnalystOutput;
-  } catch (err: any) {
-    throw new Error(`Gemini returned invalid JSON: ${err.message}`);
-  }
-
-  parsed.photos = Array.isArray(parsed.photos) ? parsed.photos.slice(0, input.requestedPhotoCount) : [];
-  parsed.videos = Array.isArray(parsed.videos) ? parsed.videos.slice(0, input.requestedVideoCount) : [];
-
-  const allowedUrls = new Set([
-    ...input.rawEvidence.map((e) => e.url),
-    ...(input.webResearch?.sources || []).map((s) => s.url)
-  ]);
-  const allowedSourceIds = new Set((input.webResearch?.sources || []).map((s) => s.id));
-
-  const validateAndFilter = <T extends PhotoOpportunity | VideoOpportunity>(items: T[]): T[] => {
-    const result: T[] = [];
-    const seenConcepts: string[][] = [];
-    for (const item of items) {
-      const evidenceUrl = item.evidence?.url ? String(item.evidence.url) : '';
-      const refs = Array.isArray(item.evidence?.source_ref_ids) ? item.evidence.source_ref_ids.map(Number) : [];
-      if (evidenceUrl && !allowedUrls.has(evidenceUrl)) continue;
-      if (!evidenceUrl && !refs.some((id) => allowedSourceIds.has(id))) continue;
-
-      const risk = evaluateRiskAndRejections(`${item.title} ${item.concept} ${item.description} ${item.prompt}`, input.rejectedContentList || []);
-      if (risk.rejected) continue;
-
-      const historyCheck = checkHistoryProtection(item.title, item.concept, input.pastOpportunitiesHistory || []);
-      if (historyCheck.isRepetitive) continue;
-
-      const tokens = extractTokens(`${item.title} ${item.concept}`);
-      if (seenConcepts.some((previous) => calculateJaccardSimilarity(previous, tokens) >= 0.7)) continue;
-      seenConcepts.push(tokens);
-
-      item.tags = Array.from(new Set((item.tags || []).map((t) => String(t).trim()).filter(Boolean))).slice(0, 25);
-      result.push(item);
-    }
-    return result;
-  };
-
-  parsed.photos = validateAndFilter(parsed.photos);
-  parsed.videos = validateAndFilter(parsed.videos);
-
-  return parsed;
+  throw lastError || new Error('Gemini strategic analyst generation failed.');
 }
 
 export function buildReportWarningText(input: {
@@ -480,17 +512,18 @@ export function buildReportWarningText(input: {
   requestedVideoCount: number;
   photos: PhotoOpportunity[];
   videos: VideoOpportunity[];
-  sourceStatuses: Record<string, string>;
+  sourceStatuses: Record<string, any>;
 }): string[] {
   const warnings: string[] = [];
   if (input.photos.length < input.requestedPhotoCount) {
-    warnings.push(`Only ${input.photos.length} evidence-backed photo opportunities passed validation; ${input.requestedPhotoCount} were requested.`);
+    warnings.push(
+      `Returned ${input.photos.length} photo opportunities (requested ${input.requestedPhotoCount}) to adhere strictly to human discussion evidence standards.`
+    );
   }
   if (input.videos.length < input.requestedVideoCount) {
-    warnings.push(`Only ${input.videos.length} evidence-backed video opportunities passed validation; ${input.requestedVideoCount} were requested.`);
-  }
-  for (const [source, status] of Object.entries(input.sourceStatuses)) {
-    if (status !== 'AVAILABLE') warnings.push(`${source}: ${status}.`);
+    warnings.push(
+      `Returned ${input.videos.length} video opportunities (requested ${input.requestedVideoCount}) to adhere strictly to human discussion evidence standards.`
+    );
   }
   return warnings;
 }

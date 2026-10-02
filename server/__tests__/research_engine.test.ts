@@ -5,9 +5,8 @@ import { computeInternalPriorityScore } from '../analysis/opportunityScore.js';
 import { analyzeRecurrence } from '../analysis/recurrence.js';
 import { evaluateRiskAndRejections } from '../analysis/riskFilter.js';
 import { analyzeSupplyAndGaps } from '../analysis/supply.js';
-import { AdobeStockCollector } from '../collectors/adobeStock.js';
-import { Pond5Collector } from '../collectors/pond5.js';
-import { ShutterstockCollector } from '../collectors/shutterstock.js';
+import { RedditCollector } from '../collectors/reddit.js';
+import { DiscordCollector } from '../collectors/discord.js';
 import { clusterEvidence } from '../normalization/clustering.js';
 import { calculateJaccardSimilarity, deduplicateEvidence } from '../normalization/dedupe.js';
 import { cleanText, extractTokens, normalizeEvidence } from '../normalization/textNormalizer.js';
@@ -38,11 +37,12 @@ async function runTests() {
   assert(!tokens.includes('and') && !tokens.includes('the'), 'stop words are filtered');
 
   const sampleEvidence: RawEvidence = {
-    source: 'Adobe Stock',
-    url: 'https://contributor.stock.adobe.com/guidelines',
+    source: 'Reddit',
+    url: 'https://reddit.com/r/StockPhotography/comments/123/healthcare_b_roll',
     collected_at: new Date().toISOString(),
-    evidence_type: 'contributor_guidance',
-    raw_title: 'Healthcare Technology and Patient Monitoring Guidelines',
+    evidence_type: 'post',
+    raw_title: 'Need authentic healthcare technology and patient monitoring b-roll',
+    raw_description: 'Can never find realistic non-cliche medical staff footage',
     raw_keywords: ['healthcare', 'patient', 'hospital', 'medical', 'technology']
   };
   const norm = normalizeEvidence(sampleEvidence);
@@ -87,24 +87,11 @@ async function runTests() {
   storage.deleteRejectedContent(0);
   assert(storage.getRejectedContent()[0] === 'ai plastic faces', 'rejection deletion persists');
 
-  if (process.env.LIVE_SOURCE_TESTS === '1') {
-    console.log('\n--- TEST 6: LIVE SOURCE SMOKE TESTS ---');
-    const [sRes, aRes, pRes] = await Promise.all([
-      new ShutterstockCollector().collect(['commercial solar', 'healthcare technology']),
-      new AdobeStockCollector().collect(['commercial solar', 'healthcare technology']),
-      new Pond5Collector().collect(['commercial solar', 'healthcare technology'])
-    ]);
-    for (const r of [...sRes, ...aRes, ...pRes]) {
-      assert(['AVAILABLE', 'UNAVAILABLE', 'BLOCKED', 'ERROR', 'EMPTY'].includes(r.status), `${r.sourceName}/${r.subSource} reports an honest status: ${r.status}`);
-      if (r.status === 'BLOCKED' || r.status === 'UNAVAILABLE' || r.status === 'ERROR') {
-        assert(r.evidence.length === 0, `${r.subSource} produced no synthetic evidence while unavailable`);
-      }
-    }
-  } else {
-    skipped += 1;
-    console.log('\n--- TEST 6: LIVE SOURCE SMOKE TESTS SKIPPED ---');
-    console.log('  ↳ Set LIVE_SOURCE_TESTS=1 to test public-web collectors.');
-  }
+  console.log('\n--- TEST 6: Reddit & Discord Collectors ---');
+  const redditCollector = new RedditCollector();
+  const discordCollector = new DiscordCollector();
+  assert(redditCollector.name === 'Reddit', 'Reddit collector initialized');
+  assert(discordCollector.name === 'Discord', 'Discord collector initialized');
 
   console.log(`\nTEST SUMMARY: ${passed} PASSED, ${skipped} SKIPPED, ${failed} FAILED`);
   if (failed) process.exitCode = 1;
@@ -113,4 +100,4 @@ async function runTests() {
 runTests().catch((err) => {
   console.error(err);
   process.exitCode = 1;
-});
+  });

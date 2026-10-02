@@ -1,10 +1,12 @@
-export type CollectorStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'ERROR' | 'BLOCKED' | 'EMPTY';
+export type CollectorStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'ERROR' | 'BLOCKED' | 'EMPTY' | 'DISABLED';
+
+export type DataSourceType = 'Reddit' | 'Discord' | 'AI Intelligence';
 
 export interface RawEvidence {
-  source: 'Shutterstock' | 'Adobe Stock' | 'Pond5';
+  source: DataSourceType;
   url: string;
   collected_at: string;
-  evidence_type: 'search_observation' | 'shot_list' | 'contributor_guidance' | 'footage_demand' | 'trends';
+  evidence_type: 'post' | 'comment' | 'message' | 'thread_message' | 'human_discussion' | 'search_observation' | 'trends';
   raw_title: string;
   raw_description?: string;
   raw_keywords: string[];
@@ -12,7 +14,7 @@ export interface RawEvidence {
 }
 
 export interface NormalizedEvidence {
-  source: 'Shutterstock' | 'Adobe Stock' | 'Pond5';
+  source: DataSourceType;
   url: string;
   collected_at: string;
   evidence_type: string;
@@ -234,4 +236,41 @@ export interface ResearchJobState {
   startedAt: number;
   error?: string;
   report?: ResearchReport;
+}
+
+// Reddit Configuration & Status
+export interface RedditConfig {
+  clientId: string;
+  clientSecret: string;
+  userAgent: string;
+  subreddits: string[];
+  timeframe: '24h' | '7d';
+  collectPosts: boolean;
+  collectComments: boolean;
+  connected?: boolean;
+  lastCollectedAt?: string;
+  collectedCount?: number;
+}
+
+// Discord Configuration & Status
+export interface DiscordGuildConfig {
+  id: string;
+  name?: string;
+  channels: Array<{ id: string; name?: string }>;
+}
+
+export interface DiscordConfig {
+  botToken: string;
+  guilds: DiscordGuildConfig[];
+  timeframe: '24h' | '7d';
+  collectMessages: boolean;
+  collectThreads: boolean;
+  connected?: boolean;
+  lastCollectedAt?: string;
+  collectedCount?: number;
+}
+
+// Platform Data Switch Configuration
+export interface PlatformDataConfig {
+  enabled: boolean;
 }

@@ -1,10 +1,52 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { HistoryRecord, RawEvidence, ResearchReport } from '../types.js';
+import type {
+  DiscordConfig,
+  HistoryRecord,
+  RawEvidence,
+  RedditConfig,
+  ResearchReport
+} from '../types.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'as_radar_x.sqlite');
+
+const DEFAULT_SUBREDDITS = [
+  'StockPhotography',
+  'AdobeStock',
+  'Shutterstock',
+  'graphic_design',
+  'VideoEditing',
+  'editors',
+  'Midjourney',
+  'blender',
+  'vfx'
+];
+
+const DEFAULT_REDDIT_CONFIG: RedditConfig = {
+  clientId: '',
+  clientSecret: '',
+  userAgent: 'AS-Radar-X/2.0 (by /u/saradagreats)',
+  subreddits: [...DEFAULT_SUBREDDITS],
+  timeframe: '24h',
+  collectPosts: true,
+  collectComments: true,
+  connected: false,
+  lastCollectedAt: undefined,
+  collectedCount: 0
+};
+
+const DEFAULT_DISCORD_CONFIG: DiscordConfig = {
+  botToken: '',
+  guilds: [],
+  timeframe: '24h',
+  collectMessages: true,
+  collectThreads: true,
+  connected: false,
+  lastCollectedAt: undefined,
+  collectedCount: 0
+};
 
 class StorageManager {
   private db: DatabaseSync | null = null;
@@ -13,11 +55,17 @@ class StorageManager {
     instructions: string;
     rejectedContent: string[];
     evidence: Map<string, RawEvidence[]>;
+    redditConfig: RedditConfig;
+    discordConfig: DiscordConfig;
+    platformDataEnabled: boolean;
   } = {
     reports: new Map(),
     instructions: '',
     rejectedContent: [],
-    evidence: new Map()
+    evidence: new Map(),
+    redditConfig: { ...DEFAULT_REDDIT_CONFIG },
+    discordConfig: { ...DEFAULT_DISCORD_CONFIG },
+    platformDataEnabled: true
   };
 
   constructor() {
@@ -92,10 +140,11 @@ class StorageManager {
 
   private loadSettings() {
     try {
-      const instructions = this.getInstructions();
-      this.memoryFallback.instructions = instructions;
-      const rejected = this.getRejectedContent();
-      this.memoryFallback.rejectedContent = rejected;
+      this.memoryFallback.instructions = this.getInstructions();
+      this.memoryFallback.rejectedContent = this.getRejectedContent();
+      this.memoryFallback.redditConfig = this.getRedditConfig();
+      this.memoryFallback.discordConfig = this.getDiscordConfig();
+      this.memoryFallback.platformDataEnabled = this.getPlatformDataEnabled();
     } catch (e) {
       // ignore
     }
@@ -117,6 +166,9 @@ class StorageManager {
         const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
         this.memoryFallback.instructions = parsed.instructions || '';
         this.memoryFallback.rejectedContent = parsed.rejectedContent || [];
+        if (parsed.redditConfig) this.memoryFallback.redditConfig = { ...DEFAULT_REDDIT_CONFIG, ...parsed.redditConfig };
+        if (parsed.discordConfig) this.memoryFallback.discordConfig = { ...DEFAULT_DISCORD_CONFIG, ...parsed.discordConfig };
+        if (typeof parsed.platformDataEnabled === 'boolean') this.memoryFallback.platformDataEnabled = parsed.platformDataEnabled;
       }
     } catch (e) {
       console.error('Error loading fallback storage files:', e);
@@ -138,7 +190,10 @@ class StorageManager {
         JSON.stringify(
           {
             instructions: this.memoryFallback.instructions,
-            rejectedContent: this.memoryFallback.rejectedContent
+            rejectedContent: this.memoryFallback.rejectedContent,
+            redditConfig: this.memoryFallback.redditConfig,
+            discordConfig: this.memoryFallback.discordConfig,
+            platformDataEnabled: this.memoryFallback.platformDataEnabled
           },
           null,
           2
@@ -299,7 +354,7 @@ class StorageManager {
           jobId,
           item.source,
           item.url || '',
-          item.evidence_type || 'search_observation',
+          item.evidence_type || 'post',
           item.collected_at || new Date().toISOString(),
           item.raw_title || '',
           JSON.stringify(item.raw_keywords || []),
@@ -361,7 +416,6 @@ class StorageManager {
       }
     }
 
-    // fallback from reports
     const result: Array<{ title: string; concept: string }> = [];
     for (const r of Array.from(this.memoryFallback.reports.values())) {
       for (const p of r.photos) result.push({ title: p.title, concept: p.concept || p.description });
@@ -371,6 +425,7 @@ class StorageManager {
     return result;
   }
 
+  // Instructions
   public getInstructions(): string {
     if (this.db) {
       try {
@@ -385,7 +440,7 @@ class StorageManager {
   }
 
   public saveInstructions(instructions: string): void {
-    const text = (instructions || '').slice(0, 500);
+    const text = (instructions || '').slice(0, 1000);
     this.memoryFallback.instructions = text;
     this.persistFallback();
 
@@ -408,14 +463,14 @@ class StorageManager {
 
     if (this.db) {
       try {
-        const stmt = this.db.prepare("DELETE FROM user_settings WHERE key = 'gemini_instructions'");
-        stmt.run();
+        this.db.prepare("DELETE FROM user_settings WHERE key = 'gemini_instructions'").run();
       } catch (err) {
         console.error('SQLite clearInstructions error:', err);
       }
     }
   }
 
+  // Gemini Key & Model
   public getCustomApiKey(): string {
     if (this.db) {
       try {
@@ -454,20 +509,21 @@ class StorageManager {
         console.error('SQLite getCustomModel error:', err);
       }
     }
-    return 'gemini-3.8-flash';
+    return 'gemini-3.7-flash';
   }
 
   public saveCustomModel(model: string): void {
     const val = (model || '').trim();
     if (this.db) {
       try {
-        this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('custom_gemini_model', ?)").run(val || 'gemini-3.8-flash');
+        this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('custom_gemini_model', ?)").run(val || 'gemini-3.7-flash');
       } catch (err) {
         console.error('SQLite saveCustomModel error:', err);
       }
     }
   }
 
+  // Rejected Content
   public getRejectedContent(): string[] {
     if (this.db) {
       try {
@@ -506,6 +562,182 @@ class StorageManager {
       list.splice(index, 1);
       this.saveRejectedContent(list);
     }
+  }
+
+  // Platform Data Toggle
+  public getPlatformDataEnabled(): boolean {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'platform_data_enabled'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value !== undefined) {
+          return row.value === 'true' || row.value === '1';
+        }
+      } catch (err) {
+        console.error('SQLite getPlatformDataEnabled error:', err);
+      }
+    }
+    return this.memoryFallback.platformDataEnabled ?? true;
+  }
+
+  public savePlatformDataEnabled(enabled: boolean): void {
+    this.memoryFallback.platformDataEnabled = !!enabled;
+    this.persistFallback();
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO user_settings (key, value)
+          VALUES ('platform_data_enabled', ?)
+        `);
+        stmt.run(enabled ? 'true' : 'false');
+      } catch (err) {
+        console.error('SQLite savePlatformDataEnabled error:', err);
+      }
+    }
+  }
+
+  // Reddit Configuration
+  public getRedditConfig(): RedditConfig {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'reddit_config'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value) {
+          const parsed = JSON.parse(row.value);
+          return {
+            ...DEFAULT_REDDIT_CONFIG,
+            ...parsed,
+            subreddits: Array.isArray(parsed.subreddits) && parsed.subreddits.length > 0 ? parsed.subreddits : [...DEFAULT_SUBREDDITS]
+          };
+        }
+      } catch (err) {
+        console.error('SQLite getRedditConfig error:', err);
+      }
+    }
+    return this.memoryFallback.redditConfig || { ...DEFAULT_REDDIT_CONFIG };
+  }
+
+  public getMaskedRedditConfig(): RedditConfig {
+    const config = this.getRedditConfig();
+    return {
+      ...config,
+      clientSecret: config.clientSecret ? '••••••••' : ''
+    };
+  }
+
+  public saveRedditConfig(patch: Partial<RedditConfig>): RedditConfig {
+    const current = this.getRedditConfig();
+    const isMaskedSecret = patch.clientSecret && (patch.clientSecret === '••••••••' || patch.clientSecret.includes('••'));
+
+    const updated: RedditConfig = {
+      ...current,
+      clientId: patch.clientId !== undefined ? patch.clientId.trim() : current.clientId,
+      clientSecret: isMaskedSecret ? current.clientSecret : (patch.clientSecret !== undefined ? patch.clientSecret.trim() : current.clientSecret),
+      userAgent: patch.userAgent !== undefined ? patch.userAgent.trim() || DEFAULT_REDDIT_CONFIG.userAgent : current.userAgent,
+      subreddits: Array.isArray(patch.subreddits) ? patch.subreddits.map((s) => s.replace(/^r\//i, '').trim()).filter(Boolean) : current.subreddits,
+      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
+      collectPosts: patch.collectPosts !== undefined ? !!patch.collectPosts : current.collectPosts,
+      collectComments: patch.collectComments !== undefined ? !!patch.collectComments : current.collectComments,
+      connected: patch.connected !== undefined ? patch.connected : current.connected,
+      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
+      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
+    };
+
+    this.memoryFallback.redditConfig = updated;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO user_settings (key, value)
+          VALUES ('reddit_config', ?)
+        `);
+        stmt.run(JSON.stringify(updated));
+      } catch (err) {
+        console.error('SQLite saveRedditConfig error:', err);
+      }
+    }
+
+    return updated;
+  }
+
+  public updateRedditStats(collectedCount: number, connected: boolean = true): void {
+    const current = this.getRedditConfig();
+    current.lastCollectedAt = new Date().toISOString();
+    current.collectedCount = (current.collectedCount || 0) + collectedCount;
+    current.connected = connected;
+    this.saveRedditConfig(current);
+  }
+
+  // Discord Configuration
+  public getDiscordConfig(): DiscordConfig {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'discord_config'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value) {
+          const parsed = JSON.parse(row.value);
+          return {
+            ...DEFAULT_DISCORD_CONFIG,
+            ...parsed,
+            guilds: Array.isArray(parsed.guilds) ? parsed.guilds : []
+          };
+        }
+      } catch (err) {
+        console.error('SQLite getDiscordConfig error:', err);
+      }
+    }
+    return this.memoryFallback.discordConfig || { ...DEFAULT_DISCORD_CONFIG };
+  }
+
+  public getMaskedDiscordConfig(): DiscordConfig {
+    const config = this.getDiscordConfig();
+    return {
+      ...config,
+      botToken: config.botToken ? '••••••••' : ''
+    };
+  }
+
+  public saveDiscordConfig(patch: Partial<DiscordConfig>): DiscordConfig {
+    const current = this.getDiscordConfig();
+    const isMaskedToken = patch.botToken && (patch.botToken === '••••••••' || patch.botToken.includes('••'));
+
+    const updated: DiscordConfig = {
+      ...current,
+      botToken: isMaskedToken ? current.botToken : (patch.botToken !== undefined ? patch.botToken.trim() : current.botToken),
+      guilds: Array.isArray(patch.guilds) ? patch.guilds : current.guilds,
+      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
+      collectMessages: patch.collectMessages !== undefined ? !!patch.collectMessages : current.collectMessages,
+      collectThreads: patch.collectThreads !== undefined ? !!patch.collectThreads : current.collectThreads,
+      connected: patch.connected !== undefined ? patch.connected : current.connected,
+      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
+      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
+    };
+
+    this.memoryFallback.discordConfig = updated;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO user_settings (key, value)
+          VALUES ('discord_config', ?)
+        `);
+        stmt.run(JSON.stringify(updated));
+      } catch (err) {
+        console.error('SQLite saveDiscordConfig error:', err);
+      }
+    }
+
+    return updated;
+  }
+
+  public updateDiscordStats(collectedCount: number, connected: boolean = true): void {
+    const current = this.getDiscordConfig();
+    current.lastCollectedAt = new Date().toISOString();
+    current.collectedCount = (current.collectedCount || 0) + collectedCount;
+    current.connected = connected;
+    this.saveDiscordConfig(current);
   }
 }
 
