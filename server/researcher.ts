@@ -7,7 +7,6 @@ import { analyzeLongevity } from './analysis/longevity.js';
 import { computeInternalPriorityScore } from './analysis/opportunityScore.js';
 import { analyzeRecurrence } from './analysis/recurrence.js';
 import { evaluateRiskAndRejections } from './analysis/riskFilter.js';
-import { checkHistoryProtection } from './analysis/historyProtection.js';
 import { analyzeSupplyAndGaps } from './analysis/supply.js';
 import { clusterEvidence } from './normalization/clustering.js';
 import { deduplicateEvidence } from './normalization/dedupe.js';
@@ -17,14 +16,46 @@ import type {
   ClusterAnalysis,
   CollectorStatus,
   RawEvidence,
-  NormalizedEvidence,
-  ConceptCluster,
   ResearchJobState,
   ResearchReport,
   ResearchStage
 } from './types.js';
 
+const BASE_RESEARCH_DOMAINS = [
+  'commercial enterprise',
+  'video editing workflows',
+  'graphic design bottlenecks',
+  'modern healthcare b-roll',
+  'clean sustainable energy',
+  'logistics automation',
+  'fintech and security',
+  'blender and 3d assets',
+  'midjourney and ai creator workflows',
+  'motion graphics needs',
+  'authentic workplace collaboration'
+];
 
+function buildResearchTopics(userInstructions: string, pastHistory: Array<{ title: string; concept: string }>): string[] {
+  const instructionTerms = (userInstructions || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 5)
+    .slice(0, 10);
+
+  const historyTerms = pastHistory
+    .flatMap((item) => `${item.title} ${item.concept}`.split(/\s+/))
+    .map((word) => word.toLowerCase().replace(/[^a-z0-9-]/g, ''))
+    .filter((word) => word.length >= 6)
+    .slice(0, 8);
+
+  const seeds = [
+    ...BASE_RESEARCH_DOMAINS,
+    ...instructionTerms.map((term) => `${term} creator request`),
+    ...historyTerms.map((term) => `${term} alternative angle`)
+  ];
+  return Array.from(new Set(seeds)).slice(0, 12);
+}
 
 class ResearchCoordinator {
   private activeJobs = new Map<string, ResearchJobState>();
@@ -90,6 +121,11 @@ class ResearchCoordinator {
     const rejectedItems = storage.getRejectedContent();
     const pastHistory = storage.getRecentOpportunityHistory(30);
     const isPlatformDataEnabled = storage.getPlatformDataEnabled();
+    // Keep the existing research-topic seeds for Reddit/Discord mode.
+    // Gemini-only mode must not inherit the hardcoded topic taxonomy.
+    const researchTopics = isPlatformDataEnabled
+      ? buildResearchTopics(userInstructions, pastHistory)
+      : [];
 
     let rawEvidence: RawEvidence[] = [];
     const sourceStatus: Record<string, CollectorStatus> = {};
@@ -100,8 +136,8 @@ class ResearchCoordinator {
       const discordCollector = new DiscordCollector();
 
       const [redditResults, discordResults] = await Promise.all([
-        redditCollector.collect(),
-        discordCollector.collect()
+        redditCollector.collect(researchTopics),
+        discordCollector.collect(researchTopics)
       ]);
 
       const allResults = [...redditResults, ...discordResults];
@@ -131,92 +167,55 @@ class ResearchCoordinator {
 
     storage.saveRawEvidence(jobId, rawEvidence);
 
-    // Gemini-only mode is intentionally isolated from the deterministic topic/category
-    // heuristics. When Platform Data is OFF, Gemini receives the user's instructions,
-    // prior opportunity history, and live grounded web research, then decides what to
-    // investigate and how to interpret it. The existing deterministic pipeline remains
-    // intact for Reddit/Discord mode.
-    let deduplicated: NormalizedEvidence[] = [];
-    let clusters: ConceptCluster[] = [];
-    let deterministicCandidates: ClusterAnalysis[] = [];
+    this.updateStage(jobId, 'NORMALIZING', 35, `Normalizing ${rawEvidence.length} conversation evidence records...`);
+    const normalized = rawEvidence.map(normalizeEvidence);
+
+    this.updateStage(jobId, 'DEDUPLICATING', 44, 'Removing duplicate discussion signals...');
+    const deduplicated = deduplicateEvidence(normalized);
+
+    this.updateStage(jobId, 'CLUSTERING', 52, 'Clustering recurring human discussion needs, asset requests, and complaints...');
+    const clusters = clusterEvidence(deduplicated);
+
+    this.updateStage(jobId, 'DEMAND_ANALYSIS', 62, 'Analyzing human demand recurrence across communities...');
+    this.updateStage(jobId, 'SUPPLY_GAP', 68, 'Measuring creator-reported asset shortages and differentiation gaps...');
+    this.updateStage(jobId, 'COMMERCIAL_USE', 74, 'Mapping commercial brand and editorial buyer use cases...');
+    this.updateStage(jobId, 'LONGEVITY', 80, 'Assessing multi-year evergreen viability vs short-lived fads...');
+    this.updateStage(jobId, 'SCORING', 85, 'Calculating transparent internal opportunity priority score...');
+
+    const clusterAnalyses: ClusterAnalysis[] = clusters.map((cluster) => {
+      const recurrence = analyzeRecurrence(cluster);
+      const commercialUse = analyzeCommercialUse(cluster);
+      const longevity = analyzeLongevity(cluster);
+      const supply = analyzeSupplyAndGaps(cluster);
+      const score = computeInternalPriorityScore(cluster, supply, commercialUse, longevity);
+      return { cluster, recurrence, commercialUse, longevity, supply, score };
+    });
+
+    const deterministicCandidates = clusterAnalyses.filter((analysis) => {
+      const text = `${analysis.cluster.name} ${analysis.cluster.primary_keywords.join(' ')}`;
+      return !evaluateRiskAndRejections(text, rejectedItems).rejected;
+    });
+
     let webResearch = undefined;
-
-    if (isPlatformDataEnabled) {
-      this.updateStage(jobId, 'NORMALIZING', 35, `Normalizing ${rawEvidence.length} conversation evidence records...`);
-      const normalized = rawEvidence.map(normalizeEvidence);
-
-      this.updateStage(jobId, 'DEDUPLICATING', 44, 'Removing duplicate discussion signals...');
-      deduplicated = deduplicateEvidence(normalized);
-
-      this.updateStage(jobId, 'CLUSTERING', 52, 'Clustering recurring human discussion needs, asset requests, and complaints...');
-      clusters = clusterEvidence(deduplicated);
-
-      this.updateStage(jobId, 'DEMAND_ANALYSIS', 62, 'Analyzing human demand recurrence across communities...');
-      this.updateStage(jobId, 'SUPPLY_GAP', 68, 'Measuring creator-reported asset shortages and differentiation gaps...');
-      this.updateStage(jobId, 'COMMERCIAL_USE', 74, 'Mapping commercial brand and editorial buyer use cases...');
-      this.updateStage(jobId, 'LONGEVITY', 80, 'Assessing multi-year evergreen viability vs short-lived fads...');
-      this.updateStage(jobId, 'SCORING', 85, 'Calculating transparent internal opportunity priority score...');
-
-      const clusterAnalyses: ClusterAnalysis[] = clusters.map((cluster) => {
-        const recurrence = analyzeRecurrence(cluster);
-        const commercialUse = analyzeCommercialUse(cluster);
-        const longevity = analyzeLongevity(cluster);
-        const supply = analyzeSupplyAndGaps(cluster);
-        const score = computeInternalPriorityScore(cluster, supply, commercialUse, longevity);
-        return { cluster, recurrence, commercialUse, longevity, supply, score };
+    try {
+      this.updateStage(jobId, 'SCORING', 88, 'Executing grounded web-research pass for broader creator community discussions...');
+      webResearch = await runGeminiWebResearch({
+        clusters: deterministicCandidates.slice(0, 10).map((a) => a.cluster),
+        rawEvidence: rawEvidence.slice(0, 80),
+        sourceStatuses: sourceStatus,
+        requestedPhotoCount: photoCount,
+        requestedVideoCount: videoCount,
+        researchTopics,
+        userCustomInstructions: userInstructions,
+        rejectedContentList: rejectedItems,
+        pastOpportunitiesHistory: pastHistory,
+        isPlatformDataEnabled
       });
-
-      deterministicCandidates = clusterAnalyses.filter((analysis) => {
-        const text = `${analysis.cluster.name} ${analysis.cluster.primary_keywords.join(' ')}`;
-        return !evaluateRiskAndRejections(text, rejectedItems).rejected;
-      });
-
-      try {
-        this.updateStage(jobId, 'SCORING', 88, 'Executing grounded web-research pass for broader creator community discussions...');
-        webResearch = await runGeminiWebResearch({
-          clusters: deterministicCandidates.slice(0, 10).map((a) => a.cluster),
-          rawEvidence: rawEvidence.slice(0, 80),
-          sourceStatuses: sourceStatus,
-          requestedPhotoCount: photoCount,
-          requestedVideoCount: videoCount,
-          researchTopics: [],
-          userCustomInstructions: userInstructions,
-          rejectedContentList: rejectedItems,
-          pastOpportunitiesHistory: pastHistory,
-          isPlatformDataEnabled
-        });
-        if (webResearch.sources.length === 0) {
-          warnings.push('Gemini web-research pass returned no grounded external sources.');
-        }
-      } catch (err: any) {
-        warnings.push(`Grounded web research pass unavailable: ${err.message}`);
+      if (webResearch.sources.length === 0) {
+        warnings.push('Gemini web-research pass returned no grounded external sources.');
       }
-    } else {
-      this.updateStage(jobId, 'NORMALIZING', 38, 'Gemini-only mode: no fixed topic taxonomy or deterministic category heuristics are being applied...');
-      this.updateStage(jobId, 'SCORING', 55, 'Gemini is choosing the research direction from your instructions, history, and current web evidence...');
-
-      try {
-        webResearch = await runGeminiWebResearch({
-          clusters: [],
-          rawEvidence: [],
-          sourceStatuses: sourceStatus,
-          requestedPhotoCount: photoCount,
-          requestedVideoCount: videoCount,
-          researchTopics: [],
-          userCustomInstructions: userInstructions,
-          rejectedContentList: rejectedItems,
-          pastOpportunitiesHistory: pastHistory,
-          isPlatformDataEnabled
-        });
-        if (webResearch.sources.length === 0) {
-          warnings.push('Gemini-only research returned no grounded external sources.');
-        }
-        if (webResearch.findings.length === 0) {
-          warnings.push('Gemini-only research returned no structured findings.');
-        }
-      } catch (err: any) {
-        warnings.push(`Gemini-only grounded web research unavailable: ${err.message}`);
-      }
+    } catch (err: any) {
+      warnings.push(`Grounded web research pass unavailable: ${err.message}`);
     }
 
     this.updateStage(jobId, 'PREPARING_PHOTOS', 92, 'Formulating differentiated photo opportunities with complete production specifications...');
@@ -237,23 +236,6 @@ class ResearchCoordinator {
         webResearch,
         isPlatformDataEnabled
       });
-
-      // Preserve the existing history feature at the application boundary too.
-      // Gemini is told to avoid repeats, but this final guard prevents near-duplicates
-      // from being surfaced even when the model ignores that instruction.
-      const historyBefore = analystOutput.photos.length + analystOutput.videos.length;
-      analystOutput.photos = analystOutput.photos.filter((item) => {
-        const check = checkHistoryProtection(item.title, item.concept, pastHistory);
-        return !check.isRepetitive;
-      });
-      analystOutput.videos = analystOutput.videos.filter((item) => {
-        const check = checkHistoryProtection(item.title, item.concept, pastHistory);
-        return !check.isRepetitive;
-      });
-      const historyRemoved = historyBefore - (analystOutput.photos.length + analystOutput.videos.length);
-      if (historyRemoved > 0) {
-        warnings.push(`History protection removed ${historyRemoved} opportunity candidate(s) that closely repeated prior reports.`);
-      }
     } catch (err: any) {
       const elapsedSeconds = Math.max(1, Math.round((Date.now() - startTime) / 1000));
       const failedReport: ResearchReport = {
@@ -265,7 +247,7 @@ class ResearchCoordinator {
         status: 'FAILED',
         sources_processed: Object.keys(sourceStatus),
         source_status: sourceStatus,
-        evidence_summary: 'Gemini strategic analysis could not complete. Collected research inputs were safely preserved in SQLite.',
+        evidence_summary: 'Gemini strategic analysis could not complete. Raw conversation evidence was safely preserved in SQLite.',
         warnings: [...warnings, `Gemini analysis error: ${err.message}`],
         photo_count_requested: photoCount,
         video_count_requested: videoCount,
@@ -298,8 +280,7 @@ class ResearchCoordinator {
       requestedVideoCount: videoCount,
       photos: analystOutput.photos,
       videos: analystOutput.videos,
-      sourceStatuses: sourceStatus,
-      isPlatformDataEnabled
+      sourceStatuses: sourceStatus
     });
 
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - startTime) / 1000));
