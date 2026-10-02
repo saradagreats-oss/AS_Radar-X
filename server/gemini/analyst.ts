@@ -61,55 +61,83 @@ interface GeminiAnalystOutput {
 }
 
 function getClient() {
-  const apiKey = storage.getCustomApiKey() || process.env.GEMINI_API_KEY;
+  const apiKey =
+    storage.getCustomApiKey() || process.env.GEMINI_API_KEY;
+
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured. Set your Gemini API key in Settings.');
+    throw new Error(
+      'GEMINI_API_KEY is not configured. Set your Gemini API key in Settings.'
+    );
   }
+
   return new GoogleGenAI({ apiKey });
 }
 
 function candidateModels(): string[] {
   const custom = storage.getCustomModel()?.trim();
   const preferred = process.env.GEMINI_MODEL?.trim();
-  return [...new Set([
-    'gemini-3.1-flash-lite',
-    custom,
-    preferred,
-    'gemini-3.7-flash'
-  ].filter(Boolean))] as string[];
+
+  return [
+    ...new Set(
+      [
+        'gemini-3.1-flash-lite',
+        custom,
+        preferred,
+        'gemini-3.7-flash'
+      ].filter(Boolean)
+    )
+  ] as string[];
 }
 
-function sourceStatusText(sourceStatuses: Record<string, string>): string {
-  return Object.entries(sourceStatuses).map(([source, status]) => `${source}: ${status}`).join('\n');
+function sourceStatusText(
+  sourceStatuses: Record<string, string>
+): string {
+  return Object.entries(sourceStatuses)
+    .map(([source, status]) => `${source}: ${status}`)
+    .join('\n');
 }
 
 function extractGroundedSources(response: any): WebResearchSource[] {
-  const chunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+  const chunks =
+    response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+
   const seen = new Set<string>();
   const sources: WebResearchSource[] = [];
+
   for (const chunk of chunks) {
     const web = chunk?.web;
     const url = web?.uri;
+
     if (!url || seen.has(url)) continue;
+
     seen.add(url);
+
     sources.push({
       id: sources.length + 1,
       title: String(web?.title || url),
       url: String(url)
     });
   }
+
   return sources;
 }
 
-export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
+export async function runGeminiWebResearch(
+  input: GroundedResearchInput
+): Promise<WebResearchResult> {
   const ai = getClient();
-  const sourceHints = [
-    'site:reddit.com/r/StockPhotography',
-    'site:reddit.com/r/AdobeStock',
-    'site:reddit.com/r/graphic_design',
-    'site:reddit.com/r/VideoEditing',
-    'site:reddit.com/r/editors'
-  ];
+
+  const sourceHints =
+    input.isPlatformDataEnabled === false
+      ? []
+      : [
+          'site:reddit.com/r/StockPhotography',
+          'site:reddit.com/r/AdobeStock',
+          'site:reddit.com/r/graphic_design',
+          'site:reddit.com/r/VideoEditing',
+          'site:reddit.com/r/editors'
+        ];
+
   const concepts = input.clusters.slice(0, 10).map((cluster) => ({
     name: cluster.name,
     keywords: cluster.primary_keywords,
@@ -118,32 +146,21 @@ export async function runGeminiWebResearch(input: GroundedResearchInput): Promis
     recurrence: cluster.recurrence_level
   }));
 
-  const sourceHints = input.isPlatformDataEnabled === false
-    ? []
-    : [
-      'site:reddit.com/r/StockPhotography',
-      'site:reddit.com/r/AdobeStock',
-      'site:reddit.com/r/graphic_design',
-      'site:reddit.com/r/VideoEditing',
-      'site:reddit.com/r/editors'
-    ];
-  const concepts = input.clusters.slice(0, 10).map((cluster) => ({
-    name: cluster.name,
-    keywords: cluster.primary_keywords,
-    sources: cluster.sources_observed,
-    evidence_count: cluster.evidence_count,
-    recurrence: cluster.recurrence_level
-  }));
-
-  const modeIsGeminiOnly = input.isPlatformDataEnabled === false;
+  const modeIsGeminiOnly =
+    input.isPlatformDataEnabled === false;
 
   const prompt = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
 
 RESEARCH MODE:
-${modeIsGeminiOnly ? 'GEMINI-ONLY AUTONOMOUS RESEARCH' : 'PLATFORM DATA + GEMINI'}
+${
+  modeIsGeminiOnly
+    ? 'GEMINI-ONLY AUTONOMOUS RESEARCH'
+    : 'PLATFORM DATA + GEMINI'
+}
 
-${modeIsGeminiOnly
-  ? `AUTONOMY RULES FOR GEMINI-ONLY MODE:
+${
+  modeIsGeminiOnly
+    ? `AUTONOMY RULES FOR GEMINI-ONLY MODE:
 - Do NOT use or infer any predefined niche list, industry priority list, buyer list, keyword taxonomy, fixed community list, or hardcoded research-question list.
 - Choose the research direction yourself from the user's current instructions, the saved history, and what the live web evidence reveals.
 - Choose search queries and sources yourself. Do not restrict the research to any predetermined websites.
@@ -151,14 +168,19 @@ ${modeIsGeminiOnly
 - Use current web evidence for current claims. Do not treat model memory as current market evidence.
 - History is memory used to avoid repeats and discover new angles; it is not proof of current demand.
 - Do not invent demand, sales, downloads, rankings, percentages, search volume, inventory counts, or claims that something will sell.`
-  : `PLATFORM-DATA MODE:
+    : `PLATFORM-DATA MODE:
 - Use the collected Reddit/Discord evidence as the primary human-demand signal.
 - The optional community hints below are starting points, not proof of demand.
 - Distinguish observed statements from strategic inference.
-- Never invent sales, downloads, rankings, percentages, or inventory counts.`}
+- Never invent sales, downloads, rankings, percentages, or inventory counts.`
+}
 
-${!modeIsGeminiOnly && sourceHints.length ? `OPTIONAL COMMUNITY SEARCH HINTS:
-${sourceHints.join('\n')}` : ''}
+${
+  !modeIsGeminiOnly && sourceHints.length
+    ? `OPTIONAL COMMUNITY SEARCH HINTS:
+${sourceHints.join('\n')}`
+    : ''
+}
 
 SOURCE STATUS:
 ${sourceStatusText(input.sourceStatuses)}
@@ -170,10 +192,18 @@ RESEARCH TARGET TOPICS:
 ${JSON.stringify(input.researchTopics || [], null, 2)}
 
 PAST OPPORTUNITY HISTORY:
-${JSON.stringify((input.pastOpportunitiesHistory || []).slice(0, 40), null, 2)}
+${JSON.stringify(
+  (input.pastOpportunitiesHistory || []).slice(0, 40),
+  null,
+  2
+)}
 
 DIRECT EVIDENCE SAMPLE:
-${JSON.stringify(input.rawEvidence.slice(0, 60), null, 2)}
+${JSON.stringify(
+  input.rawEvidence.slice(0, 60),
+  null,
+  2
+)}
 
 RESEARCH OBJECTIVE:
 - Find authentic signals about useful visual/content needs, concrete creator or professional problems, missing or weak asset coverage, recurring commercial use cases, or other evidence that can justify stock photo/video opportunities.
@@ -200,10 +230,18 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
             topic: { type: Type.STRING },
             observed_fact: { type: Type.STRING },
             commercial_signal: { type: Type.STRING },
-            supply_or_differentiation_signal: { type: Type.STRING },
+            supply_or_differentiation_signal: {
+              type: Type.STRING
+            },
             inference: { type: Type.STRING }
           },
-          required: ['topic', 'observed_fact', 'commercial_signal', 'supply_or_differentiation_signal', 'inference']
+          required: [
+            'topic',
+            'observed_fact',
+            'commercial_signal',
+            'supply_or_differentiation_signal',
+            'inference'
+          ]
         }
       }
     },
@@ -211,6 +249,7 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
   };
 
   let lastError: any = null;
+
   for (const model of candidateModels()) {
     try {
       const response = await ai.models.generateContent({
@@ -225,12 +264,20 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
             : 'You are the market research analyst for AS-Radar-X. Use the supplied human discussion evidence and web research to identify creator needs, complaints, asset requests, and commercial stock content gaps. Do not fabricate statistics.'
         }
       });
-      const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
+
+      const parsed = JSON.parse(
+        response.text || '{}'
+      ) as GeminiWebResearchOutput;
+
       return {
         summary: parsed.summary || 'Web research completed.',
-        findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 12) : [],
+        findings: Array.isArray(parsed.findings)
+          ? parsed.findings.slice(0, 12)
+          : [],
         sources: extractGroundedSources(response),
-        search_queries: response?.candidates?.[0]?.groundingMetadata?.webSearchQueries || []
+        search_queries:
+          response?.candidates?.[0]?.groundingMetadata
+            ?.webSearchQueries || []
       };
     } catch (err: any) {
       lastError = err;
@@ -240,15 +287,34 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
   throw lastError || new Error('Grounded web research failed.');
 }
 
-function evidenceReferencePrompt(webResearch?: WebResearchResult): string {
-  if (!webResearch) return 'No secondary web research was available.';
+function evidenceReferencePrompt(
+  webResearch?: WebResearchResult
+): string {
+  if (!webResearch) {
+    return 'No secondary web research was available.';
+  }
+
   const sources = webResearch.sources.length
-    ? webResearch.sources.map((s) => `[${s.id}] ${s.title} — ${s.url}`).join('\n')
+    ? webResearch.sources
+        .map(
+          (s) => `[${s.id}] ${s.title} — ${s.url}`
+        )
+        .join('\n')
     : 'No grounded web source metadata returned.';
-  return `SECONDARY WEB RESEARCH MEMO:\n${webResearch.summary}\n\nFINDINGS:\n${JSON.stringify(webResearch.findings, null, 2)}\n\nGROUNDED SOURCES:\n${sources}`;
+
+  return `SECONDARY WEB RESEARCH MEMO:
+${webResearch.summary}
+
+FINDINGS:
+${JSON.stringify(webResearch.findings, null, 2)}
+
+GROUNDED SOURCES:
+${sources}`;
 }
 
-function buildProductionSpecRules(media: 'photo' | 'video') {
+function buildProductionSpecRules(
+  media: 'photo' | 'video'
+) {
   return media === 'photo'
     ? `For every PHOTO produce a detailed production_spec with:
 - subject
@@ -293,39 +359,52 @@ Then write the final prompt as a coherent, production-ready prompt derived from 
 Then write the final video prompt as a coherent, production-ready motion prompt derived from those fields.`;
 }
 
-export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
+export async function runGeminiStrategicAnalyst(
+  input: AnalystInput
+): Promise<GeminiAnalystOutput> {
   const ai = getClient();
-  const webMemo = evidenceReferencePrompt(input.webResearch);
+  const webMemo = evidenceReferencePrompt(
+    input.webResearch
+  );
 
   const evidencePayload = {
-    is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
+    is_platform_data_enabled:
+      input.isPlatformDataEnabled ?? true,
+
     source_statuses: input.sourceStatuses,
-    deterministic_analysis: input.clusterAnalyses.map((a) => ({
-      cluster: {
-        id: a.cluster.id,
-        name: a.cluster.name,
-        keywords: a.cluster.primary_keywords,
-        sources: a.cluster.sources_observed,
-        evidence_count: a.cluster.evidence_count,
-        recurrence_level: a.cluster.recurrence_level,
-        evergreen_assessment: a.cluster.evergreen_assessment
-      },
-      recurrence: a.recurrence,
-      supply: a.supply,
-      commercial_use: a.commercialUse,
-      longevity: a.longevity,
-      score: a.score
-    })),
+
+    deterministic_analysis: input.clusterAnalyses.map(
+      (a) => ({
+        cluster: {
+          id: a.cluster.id,
+          name: a.cluster.name,
+          keywords: a.cluster.primary_keywords,
+          sources: a.cluster.sources_observed,
+          evidence_count: a.cluster.evidence_count,
+          recurrence_level: a.cluster.recurrence_level,
+          evergreen_assessment:
+            a.cluster.evergreen_assessment
+        },
+        recurrence: a.recurrence,
+        supply: a.supply,
+        commercial_use: a.commercialUse,
+        longevity: a.longevity,
+        score: a.score
+      })
+    ),
+
     raw_evidence_count: input.rawEvidence.length,
-    human_discussion_evidence_sample: input.rawEvidence.slice(0, 80).map((e) => ({
-      source: e.source,
-      url: e.url,
-      evidence_type: e.evidence_type,
-      title: e.raw_title,
-      description: e.raw_description?.slice(0, 200),
-      keywords: e.raw_keywords,
-      metadata: e.metadata
-    }))
+
+    human_discussion_evidence_sample:
+      input.rawEvidence.slice(0, 80).map((e) => ({
+        source: e.source,
+        url: e.url,
+        evidence_type: e.evidence_type,
+        title: e.raw_title,
+        description: e.raw_description?.slice(0, 200),
+        keywords: e.raw_keywords,
+        metadata: e.metadata
+      }))
   };
 
   const platformSystemInstruction = `You are AS-Radar-X Lead Stock Content Market Intelligence Analyst + Commercial Creative Director.
@@ -334,7 +413,7 @@ Your mission is to turn real human discussions (Reddit discussions, creator comp
 CORE INTELLIGENCE WORKFLOW:
 1. DETECT HUMAN DEMAND & COMPLAINTS:
    Analyze the conversations for repeated needs, creators struggling to find specific visuals, complaints about cliché or outdated stock photos, and genuine commercial bottlenecks.
-2. SYNTHESIZE OPPORTUNITIES:
+2. SYNTHHESIZE OPPORTUNITIES:
    Combine human demand, recurrence, commercial usefulness, existing supply/saturation evidence, differentiation gaps, and longevity.
 3. HARD PRODUCTION SPECIFICATIONS:
    For every opportunity, produce complete photographic/cinematographic production specifications that a creator or AI generator can execute immediately.
@@ -350,10 +429,19 @@ USER CUSTOM INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
 
 USER REJECTION LIST:
-${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
+${
+  (input.rejectedContentList || [])
+    .map((r) => `- ${r}`)
+    .join('\n') || 'None'
+}
 
 PAST OPPORTUNITY HISTORY (Do NOT duplicate previous titles or concepts):
-${(input.pastOpportunitiesHistory || []).slice(0, 30).map((p) => `- ${p.title} | ${p.concept}`).join('\n') || 'None'}
+${
+  (input.pastOpportunitiesHistory || [])
+    .slice(0, 30)
+    .map((p) => `- ${p.title} | ${p.concept}`)
+    .join('\n') || 'None'
+}
 
 ${webMemo}
 
@@ -382,13 +470,25 @@ ${buildProductionSpecRules('photo')}
 ${buildProductionSpecRules('video')}
 
 USER CUSTOM INSTRUCTIONS:
-${input.userCustomInstructions || 'No custom instructions were provided. Use your own judgment about what to research and create, while being explicit about evidence limitations.'}
+${
+  input.userCustomInstructions ||
+  'No custom instructions were provided. Use your own judgment about what to research and create, while being explicit about evidence limitations.'
+}
 
 USER REJECTION LIST:
-${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
+${
+  (input.rejectedContentList || [])
+    .map((r) => `- ${r}`)
+    .join('\n') || 'None'
+}
 
 PAST OPPORTUNITY HISTORY (memory; avoid close repeats):
-${(input.pastOpportunitiesHistory || []).slice(0, 40).map((p) => `- ${p.title} | ${p.concept}`).join('\n') || 'None'}
+${
+  (input.pastOpportunitiesHistory || [])
+    .slice(0, 40)
+    .map((p) => `- ${p.title} | ${p.concept}`)
+    .join('\n') || 'None'
+}
 
 ${webMemo}
 
@@ -397,9 +497,10 @@ Maximum photos: ${input.requestedPhotoCount}
 Maximum videos: ${input.requestedVideoCount}
 `;
 
-  const systemInstruction = input.isPlatformDataEnabled === false
-    ? geminiOnlySystemInstruction
-    : platformSystemInstruction;
+  const systemInstruction =
+    input.isPlatformDataEnabled === false
+      ? geminiOnlySystemInstruction
+      : platformSystemInstruction;
 
   const prompt = `Synthesize the final AS-Radar-X stock content opportunity report based on this human discussion and market evidence package:
 
@@ -414,9 +515,17 @@ Return strictly JSON matching the response schema.`;
       url: { type: Type.STRING },
       observation: { type: Type.STRING },
       inference: { type: Type.STRING },
-      source_ref_ids: { type: Type.ARRAY, items: { type: Type.INTEGER } }
+      source_ref_ids: {
+        type: Type.ARRAY,
+        items: { type: Type.INTEGER }
+      }
     },
-    required: ['source', 'url', 'observation', 'inference']
+    required: [
+      'source',
+      'url',
+      'observation',
+      'inference'
+    ]
   };
 
   const productionSpecSchema = {
@@ -461,7 +570,10 @@ Return strictly JSON matching the response schema.`;
       longevity: { type: Type.STRING },
       trend_dependence: { type: Type.STRING },
       prompt: { type: Type.STRING },
-      tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+      tags: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING }
+      },
       production_spec: productionSpecSchema,
       differentiation_strategy: { type: Type.STRING },
       buyer_use_case: { type: Type.STRING },
@@ -503,7 +615,10 @@ Return strictly JSON matching the response schema.`;
       supply_gap: { type: Type.STRING },
       longevity: { type: Type.STRING },
       prompt: { type: Type.STRING },
-      tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+      tags: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING }
+      },
       production_spec: productionSpecSchema,
       differentiation_strategy: { type: Type.STRING },
       buyer_use_case: { type: Type.STRING },
@@ -534,14 +649,28 @@ Return strictly JSON matching the response schema.`;
     type: Type.OBJECT,
     properties: {
       evidence_summary: { type: Type.STRING },
-      warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
-      photos: { type: Type.ARRAY, items: photoOpportunitySchema },
-      videos: { type: Type.ARRAY, items: videoOpportunitySchema }
+      warnings: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING }
+      },
+      photos: {
+        type: Type.ARRAY,
+        items: photoOpportunitySchema
+      },
+      videos: {
+        type: Type.ARRAY,
+        items: videoOpportunitySchema
+      }
     },
-    required: ['evidence_summary', 'photos', 'videos']
+    required: [
+      'evidence_summary',
+      'photos',
+      'videos'
+    ]
   };
 
   let lastError: any = null;
+
   for (const model of candidateModels()) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -556,18 +685,40 @@ Return strictly JSON matching the response schema.`;
           }
         });
 
-        const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+        const parsed = JSON.parse(
+          response.text || '{}'
+        ) as GeminiAnalystOutput;
+
         return {
-          evidence_summary: parsed.evidence_summary || 'Analysis completed.',
+          evidence_summary:
+            parsed.evidence_summary ||
+            'Analysis completed.',
           warnings: parsed.warnings || [],
-          photos: (parsed.photos || []).slice(0, input.requestedPhotoCount),
-          videos: (parsed.videos || []).slice(0, input.requestedVideoCount)
+          photos: (parsed.photos || []).slice(
+            0,
+            input.requestedPhotoCount
+          ),
+          videos: (parsed.videos || []).slice(
+            0,
+            input.requestedVideoCount
+          )
         };
       } catch (err: any) {
         lastError = err;
-        const msg = String(err?.message || '');
-        if ((msg.includes('503') || msg.includes('high demand') || msg.includes('429')) && attempt < 2) {
-          await new Promise((r) => setTimeout(r, 2500));
+
+        const msg = String(
+          err?.message || ''
+        );
+
+        if (
+          (msg.includes('503') ||
+            msg.includes('high demand') ||
+            msg.includes('429')) &&
+          attempt < 2
+        ) {
+          await new Promise((r) =>
+            setTimeout(r, 2500)
+          );
         } else {
           break;
         }
@@ -575,7 +726,12 @@ Return strictly JSON matching the response schema.`;
     }
   }
 
-  throw lastError || new Error('Gemini strategic analyst generation failed.');
+  throw (
+    lastError ||
+    new Error(
+      'Gemini strategic analyst generation failed.'
+    )
+  );
 }
 
 export function buildReportWarningText(input: {
@@ -586,15 +742,24 @@ export function buildReportWarningText(input: {
   sourceStatuses: Record<string, any>;
 }): string[] {
   const warnings: string[] = [];
-  if (input.photos.length < input.requestedPhotoCount) {
+
+  if (
+    input.photos.length <
+    input.requestedPhotoCount
+  ) {
     warnings.push(
       `Returned ${input.photos.length} photo opportunities (requested ${input.requestedPhotoCount}) to adhere strictly to human discussion evidence standards.`
     );
   }
-  if (input.videos.length < input.requestedVideoCount) {
+
+  if (
+    input.videos.length <
+    input.requestedVideoCount
+  ) {
     warnings.push(
       `Returned ${input.videos.length} video opportunities (requested ${input.requestedVideoCount}) to adhere strictly to human discussion evidence standards.`
     );
   }
+
   return warnings;
 }
