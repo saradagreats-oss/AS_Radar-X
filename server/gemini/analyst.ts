@@ -174,7 +174,14 @@ ${
 - Distinguish observed statements from strategic inference.
 - Never invent sales, downloads, rankings, percentages, or inventory counts.`
 }
+TITLE: Write a single, natural, SEO-optimized English sentence combining the main subject and important visual details. Do not generate a separate description; merge all vital context directly into this title. Strictly avoid special characters like '|'.
+TAGS: Generate EXACTLY 25 comma-separated keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms describing the core content.
 
+Do not clearly and directly show any human face in any of the provided content. Also, do not use text in any of the content.
+
+You must strictly adhere to the quantity of content requested by the user.
+
+Generate a detailed, clear, and comprehensive prompt suitable for creating contens. Explicitly specify the main subject, environment, lighting, camera framing, movement, color palette, and visual style. Keep all instructions direct, highly specific, and free of ambiguity.
 ${
   !modeIsGeminiOnly && sourceHints.length
     ? `OPTIONAL COMMUNITY SEARCH HINTS:
