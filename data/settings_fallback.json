@@ -22,7 +22,7 @@
     "collectPosts": true,
     "collectComments": true,
     "connected": false,
-    "lastCollectedAt": "2026-10-01T19:22:51.148Z",
+    "lastCollectedAt": "2026-10-09T05:23:03.879Z",
     "collectedCount": 0
   },
   "discordConfig": {
@@ -34,5 +34,6 @@
     "connected": false,
     "collectedCount": 0
   },
-  "platformDataEnabled": true
+  "platformDataEnabled": true,
+  "pdfDocument": null
 }

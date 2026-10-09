@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type {
   DiscordConfig,
   HistoryRecord,
+  PdfDocumentConfig,
   RawEvidence,
   RedditConfig,
   ResearchReport
@@ -58,6 +59,7 @@ class StorageManager {
     redditConfig: RedditConfig;
     discordConfig: DiscordConfig;
     platformDataEnabled: boolean;
+    pdfDocument: PdfDocumentConfig | null;
   } = {
     reports: new Map(),
     instructions: '',
@@ -65,7 +67,8 @@ class StorageManager {
     evidence: new Map(),
     redditConfig: { ...DEFAULT_REDDIT_CONFIG },
     discordConfig: { ...DEFAULT_DISCORD_CONFIG },
-    platformDataEnabled: true
+    platformDataEnabled: true,
+    pdfDocument: null
   };
 
   constructor() {
@@ -145,6 +148,7 @@ class StorageManager {
       this.memoryFallback.redditConfig = this.getRedditConfig();
       this.memoryFallback.discordConfig = this.getDiscordConfig();
       this.memoryFallback.platformDataEnabled = this.getPlatformDataEnabled();
+      this.memoryFallback.pdfDocument = this.getPdfDocument();
     } catch (e) {
       // ignore
     }
@@ -169,6 +173,7 @@ class StorageManager {
         if (parsed.redditConfig) this.memoryFallback.redditConfig = { ...DEFAULT_REDDIT_CONFIG, ...parsed.redditConfig };
         if (parsed.discordConfig) this.memoryFallback.discordConfig = { ...DEFAULT_DISCORD_CONFIG, ...parsed.discordConfig };
         if (typeof parsed.platformDataEnabled === 'boolean') this.memoryFallback.platformDataEnabled = parsed.platformDataEnabled;
+        if (parsed.pdfDocument) this.memoryFallback.pdfDocument = parsed.pdfDocument;
       }
     } catch (e) {
       console.error('Error loading fallback storage files:', e);
@@ -193,7 +198,8 @@ class StorageManager {
             rejectedContent: this.memoryFallback.rejectedContent,
             redditConfig: this.memoryFallback.redditConfig,
             discordConfig: this.memoryFallback.discordConfig,
-            platformDataEnabled: this.memoryFallback.platformDataEnabled
+            platformDataEnabled: this.memoryFallback.platformDataEnabled,
+            pdfDocument: this.memoryFallback.pdfDocument
           },
           null,
           2
@@ -418,8 +424,8 @@ class StorageManager {
 
     const result: Array<{ title: string; concept: string }> = [];
     for (const r of Array.from(this.memoryFallback.reports.values())) {
-      for (const p of r.photos) result.push({ title: p.title, concept: p.concept || p.description });
-      for (const v of r.videos) result.push({ title: v.title, concept: v.concept || v.description });
+      for (const p of r.photos) result.push({ title: p.title || '', concept: p.concept || p.description || '' });
+      for (const v of r.videos) result.push({ title: v.title || '', concept: v.concept || v.description || '' });
       if (result.length >= limit) break;
     }
     return result;
@@ -466,6 +472,52 @@ class StorageManager {
         this.db.prepare("DELETE FROM user_settings WHERE key = 'gemini_instructions'").run();
       } catch (err) {
         console.error('SQLite clearInstructions error:', err);
+      }
+    }
+  }
+
+  // PDF Document & Directives
+  public getPdfDocument(): PdfDocumentConfig | null {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'pdf_document_config'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row && row.value) {
+          return JSON.parse(row.value) as PdfDocumentConfig;
+        }
+      } catch (err) {
+        console.error('SQLite getPdfDocument error:', err);
+      }
+    }
+    return this.memoryFallback.pdfDocument || null;
+  }
+
+  public savePdfDocument(doc: PdfDocumentConfig): void {
+    this.memoryFallback.pdfDocument = doc;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare(`
+          INSERT OR REPLACE INTO user_settings (key, value)
+          VALUES ('pdf_document_config', ?)
+        `);
+        stmt.run(JSON.stringify(doc));
+      } catch (err) {
+        console.error('SQLite savePdfDocument error:', err);
+      }
+    }
+  }
+
+  public clearPdfDocument(): void {
+    this.memoryFallback.pdfDocument = null;
+    this.persistFallback();
+
+    if (this.db) {
+      try {
+        this.db.prepare("DELETE FROM user_settings WHERE key = 'pdf_document_config'").run();
+      } catch (err) {
+        console.error('SQLite clearPdfDocument error:', err);
       }
     }
   }

@@ -119,8 +119,9 @@ class ResearchCoordinator {
     this.updateStage(jobId, 'INITIALIZING', 8, 'Loading settings, community lists, rejection memory, and platform toggles...');
     const userInstructions = storage.getInstructions();
     const rejectedItems = storage.getRejectedContent();
-    const pastHistory = storage.getRecentOpportunityHistory(30);
+    const pastHistory = storage.getRecentOpportunityHistory(35);
     const isPlatformDataEnabled = storage.getPlatformDataEnabled();
+    const pdfDoc = storage.getPdfDocument();
 
     // Keep the existing research-topic seeds for Reddit/Discord mode.
     // Gemini-only mode must not inherit the hardcoded topic taxonomy.
@@ -130,6 +131,15 @@ class ResearchCoordinator {
 
     let rawEvidence: RawEvidence[] = [];
     const sourceStatus: Record<string, CollectorStatus> = {};
+
+    if (pdfDoc) {
+      this.updateStage(
+        jobId,
+        'PDF_ANALYSIS',
+        14,
+        `Analyzing attached reference PDF "${pdfDoc.fileName}" and specific user directives...`
+      );
+    }
 
     if (isPlatformDataEnabled) {
       this.updateStage(
@@ -294,7 +304,8 @@ class ResearchCoordinator {
         userCustomInstructions: userInstructions,
         rejectedContentList: rejectedItems,
         pastOpportunitiesHistory: pastHistory,
-        isPlatformDataEnabled
+        isPlatformDataEnabled,
+        pdfDoc
       });
 
       if (webResearch.sources.length === 0) {
@@ -310,14 +321,14 @@ class ResearchCoordinator {
       jobId,
       'PREPARING_PHOTOS',
       92,
-      'Formulating differentiated photo opportunities with complete production specifications...'
+      'Formulating differentiated photo opportunities with unified SEO titles, micro-texture prompts, and 25 SEO tags...'
     );
 
     this.updateStage(
       jobId,
       'PREPARING_VIDEOS',
       96,
-      'Formulating high-value motion video opportunities with cinematic camera specifications...'
+      'Formulating cinematic video opportunities with unified SEO titles, motion-rich prompts, and 25 SEO tags...'
     );
 
     let analystOutput;
@@ -334,7 +345,8 @@ class ResearchCoordinator {
         rejectedContentList: rejectedItems,
         pastOpportunitiesHistory: pastHistory,
         webResearch,
-        isPlatformDataEnabled
+        isPlatformDataEnabled,
+        pdfDoc
       });
     } catch (err: any) {
       const elapsedSeconds = Math.max(

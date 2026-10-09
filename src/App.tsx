@@ -25,8 +25,9 @@ const RESEARCH_STAGES: Array<{ id: ResearchStage; label: string }> = [
   { id: 'COMMERCIAL_USE', label: 'MAPPING COMMERCIAL USE' },
   { id: 'LONGEVITY', label: 'CHECKING EVERGREEN LONGEVITY' },
   { id: 'SCORING', label: 'SCORING OPPORTUNITIES' },
-  { id: 'PREPARING_PHOTOS', label: 'PREPARING PHOTO IDEAS' },
-  { id: 'PREPARING_VIDEOS', label: 'PREPARING VIDEO IDEAS' },
+  { id: 'PDF_ANALYSIS', label: 'ANALYZING ATTACHED PDF & VISUAL DIRECTIVES' },
+  { id: 'PREPARING_PHOTOS', label: 'PREPARING PHOTO OPPORTUNITIES (SEO TITLES & 25 TAGS)' },
+  { id: 'PREPARING_VIDEOS', label: 'PREPARING VIDEO OPPORTUNITIES (SEO TITLES & 25 TAGS)' },
   { id: 'COMPLETE', label: 'REPORT READY' }
 ];
 
@@ -82,6 +83,31 @@ export default function App() {
   const [instructionsText, setInstructionsText] = useState<string>('');
   const [rejectedItems, setRejectedItems] = useState<string[]>([]);
   const [newRejectionInput, setNewRejectionInput] = useState<string>('');
+
+  // PDF Reference Document & Directives state
+  const [pdfConfig, setPdfConfig] = useState<{
+    hasPdf: boolean;
+    fileName: string;
+    fileSize: number;
+    instructions: string;
+    uploadedAt: string;
+  }>({
+    hasPdf: false,
+    fileName: '',
+    fileSize: 0,
+    instructions: '',
+    uploadedAt: ''
+  });
+  const [pdfDirectivesInput, setPdfDirectivesInput] = useState<string>('');
+  const [pendingPdfFile, setPendingPdfFile] = useState<{
+    name: string;
+    size: number;
+    mimeType: string;
+    base64: string;
+  } | null>(null);
+  const [isSavingPdf, setIsSavingPdf] = useState<boolean>(false);
+  const [isClearingPdf, setIsClearingPdf] = useState<boolean>(false);
+  const [pdfUploadError, setPdfUploadError] = useState<string | null>(null);
 
   // Toast banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -197,6 +223,7 @@ export default function App() {
     loadSourcesStatus();
     loadHistory();
     loadGeminiConfig();
+    loadPdfConfig();
 
     // Check active job
     const storedJobId = localStorage.getItem('as_radar_x_active_job');
@@ -361,6 +388,138 @@ export default function App() {
       }
     } catch (err: any) {
       showToast(`Error: ${err.message}`);
+    }
+  };
+
+  // PDF Reference Document & Directives Handlers
+  const loadPdfConfig = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/pdf-instruction'));
+      if (res.ok) {
+        const data = await res.json();
+        setPdfConfig({
+          hasPdf: !!data.hasPdf,
+          fileName: data.fileName || '',
+          fileSize: data.fileSize || 0,
+          instructions: data.instructions || '',
+          uploadedAt: data.uploadedAt || ''
+        });
+        if (data.instructions) {
+          setPdfDirectivesInput(data.instructions);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handlePdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setPdfUploadError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setPdfUploadError('Please select a valid PDF document (.pdf).');
+      return;
+    }
+
+    if (file.size > 30 * 1024 * 1024) {
+      setPdfUploadError('PDF file size exceeds 30MB limit.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      setPendingPdfFile({
+        name: file.name,
+        size: file.size,
+        mimeType: 'application/pdf',
+        base64
+      });
+      showToast(`PDF loaded: ${file.name} (${Math.round(file.size / 1024)} KB). Click "Save PDF & Directives" to save.`);
+    };
+    reader.onerror = () => {
+      setPdfUploadError('Failed to read the local PDF file. Check permissions.');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSavePdfConfig = async () => {
+    setIsSavingPdf(true);
+    setPdfUploadError(null);
+    try {
+      if (!pendingPdfFile && !pdfConfig.hasPdf) {
+        setPdfUploadError('Please select a PDF file before saving.');
+        setIsSavingPdf(false);
+        return;
+      }
+
+      const payload: any = {
+        instructions: pdfDirectivesInput.slice(0, 3000)
+      };
+
+      if (pendingPdfFile) {
+        payload.fileName = pendingPdfFile.name;
+        payload.fileSize = pendingPdfFile.size;
+        payload.mimeType = pendingPdfFile.mimeType;
+        payload.base64Data = pendingPdfFile.base64;
+      } else {
+        payload.fileName = pdfConfig.fileName;
+        payload.fileSize = pdfConfig.fileSize;
+        payload.mimeType = 'application/pdf';
+      }
+
+      const res = await fetch(getApiUrl('/api/pdf-instruction'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setPdfConfig({
+          hasPdf: true,
+          fileName: data.fileName || pendingPdfFile?.name || pdfConfig.fileName,
+          fileSize: data.fileSize || pendingPdfFile?.size || pdfConfig.fileSize,
+          instructions: pdfDirectivesInput,
+          uploadedAt: data.uploadedAt || new Date().toISOString()
+        });
+        setPendingPdfFile(null);
+        showToast('PDF document and directives saved successfully.');
+      } else {
+        const err = await res.json();
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+    } catch (err: any) {
+      setPdfUploadError(err.message || 'Failed saving PDF');
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSavingPdf(false);
+    }
+  };
+
+  const handleClearPdfConfig = async () => {
+    setIsClearingPdf(true);
+    try {
+      const res = await fetch(getApiUrl('/api/pdf-instruction'), { method: 'DELETE' });
+      if (res.ok) {
+        setPdfConfig({
+          hasPdf: false,
+          fileName: '',
+          fileSize: 0,
+          instructions: '',
+          uploadedAt: ''
+        });
+        setPendingPdfFile(null);
+        setPdfDirectivesInput('');
+        showToast('PDF document and directives cleared.');
+      }
+    } catch (err: any) {
+      showToast(`Error clearing PDF: ${err.message}`);
+    } finally {
+      setIsClearingPdf(false);
     }
   };
 
@@ -1464,6 +1623,151 @@ export default function App() {
               </div>
             </div>
 
+            {/* Reference PDF Document & Visual Directives */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[var(--border-subtle)] gap-2">
+                <div>
+                  <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                    <i className="fa-solid fa-file-pdf text-rose-400"></i>
+                    <span>Reference PDF Document &amp; Visual Directives</span>
+                  </h3>
+                  <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                    Upload a PDF document for Gemini to inspect pages, photography, composition, and visual guidelines directly.
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.65rem] font-mono font-bold uppercase ${
+                      pdfConfig.hasPdf
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                        : pendingPdfFile
+                        ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
+                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                    }`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        pdfConfig.hasPdf ? 'bg-emerald-400' : pendingPdfFile ? 'bg-amber-400 animate-pulse' : 'bg-zinc-500'
+                      }`}
+                    ></span>
+                    {pdfConfig.hasPdf
+                      ? 'ATTACHED & PERSISTED'
+                      : pendingPdfFile
+                      ? 'READY TO SAVE'
+                      : 'NO PDF ATTACHED'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Upload Zone / Document details */}
+              <div className="p-4 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-lg font-mono text-xs space-y-3">
+                {pdfConfig.hasPdf || pendingPdfFile ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 text-lg shrink-0">
+                        <i className="fa-solid fa-file-pdf"></i>
+                      </div>
+                      <div>
+                        <div className="font-bold text-[var(--text-main)] text-xs flex items-center gap-2">
+                          <span>{pendingPdfFile ? pendingPdfFile.name : pdfConfig.fileName}</span>
+                          {pendingPdfFile && (
+                            <span className="px-1.5 py-0.2 bg-amber-500/20 text-amber-300 text-[0.60rem] rounded font-mono">
+                              UNSAVED
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[0.68rem] text-[var(--text-dim)] mt-0.5">
+                          Size:{' '}
+                          {Math.round(
+                            (pendingPdfFile ? pendingPdfFile.size : pdfConfig.fileSize) / 1024
+                          )}{' '}
+                          KB &bull;{' '}
+                          {pdfConfig.uploadedAt
+                            ? `Attached on ${new Date(pdfConfig.uploadedAt).toLocaleDateString()}`
+                            : 'Ready to save'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <label className="py-1.5 px-3 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.68rem] font-mono text-[var(--text-muted)] cursor-pointer text-center">
+                      <i className="fa-solid fa-arrow-rotate-right mr-1.5"></i>
+                      Change PDF
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        onChange={handlePdfFileSelect}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded-lg cursor-pointer transition bg-[var(--bg-panel)]/40 hover:bg-[var(--bg-panel)]/80">
+                    <i className="fa-solid fa-cloud-arrow-up text-2xl text-[var(--accent-amber)] mb-2"></i>
+                    <span className="text-xs font-bold text-[var(--text-main)] mb-1">
+                      Click or drag a PDF document here to attach
+                    </span>
+                    <span className="text-[0.66rem] text-[var(--text-dim)] text-center">
+                      PDF pages, photos, and visual specifications will be visually analyzed by Gemini during research (Max 30MB)
+                    </span>
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={handlePdfFileSelect}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+
+                {pdfUploadError && (
+                  <div className="p-2.5 bg-red-500/10 border border-red-500/30 rounded text-red-300 text-[0.72rem] flex items-center gap-2">
+                    <i className="fa-solid fa-triangle-exclamation text-red-400"></i>
+                    <span>{pdfUploadError}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Directives for this specific PDF */}
+              <div>
+                <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-mono font-bold mb-1.5 flex items-center justify-between">
+                  <span>PDF Specific Analysis Directives &amp; Instructions</span>
+                  <span className="text-[0.60rem] lowercase text-[var(--text-dim)] font-normal">
+                    (tells Gemini what to examine inside this PDF)
+                  </span>
+                </label>
+                <textarea
+                  value={pdfDirectivesInput}
+                  onChange={(e) => setPdfDirectivesInput(e.target.value)}
+                  placeholder="e.g. Inspect the clinical equipment on pages 4-7, examine the lighting and camera framing in the photo spread, extract missing b-roll opportunities, avoid plastic packaging shown on page 10..."
+                  rows={4}
+                  className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-3 text-xs font-mono text-[var(--text-main)] outline-none leading-relaxed"
+                ></textarea>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={handleSavePdfConfig}
+                  disabled={isSavingPdf || (!pendingPdfFile && !pdfConfig.hasPdf)}
+                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-40 text-black font-bold font-mono text-xs uppercase rounded transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <i className={`fa-solid ${isSavingPdf ? 'fa-spinner fa-spin' : 'fa-floppy-disk'}`}></i>
+                  <span>{isSavingPdf ? 'SAVING...' : 'SAVE PDF & DIRECTIVES'}</span>
+                </button>
+
+                {(pdfConfig.hasPdf || pendingPdfFile) && (
+                  <button
+                    onClick={handleClearPdfConfig}
+                    disabled={isClearingPdf}
+                    className="py-2 px-3.5 bg-[var(--bg-panel)] hover:bg-red-500/10 hover:border-red-500/40 hover:text-red-300 border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition flex items-center gap-1.5 cursor-pointer"
+                    title="Clear attached PDF and directives"
+                  >
+                    <i className={`fa-solid ${isClearingPdf ? 'fa-spinner fa-spin' : 'fa-trash-can'}`}></i>
+                    <span>CLEAR PDF</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Rejection / Exclusion Memory */}
             <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
               <div className="pb-3 border-b border-[var(--border-subtle)]">
@@ -1738,8 +2042,9 @@ export default function App() {
                     onChange={(e) => setSelectedModelInput(e.target.value)}
                     className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2 text-xs text-[var(--text-main)] outline-none"
                   >
-                    <option value="gemini-3.8-flash">gemini-3.8-flash (Recommended: High-speed market synthesis)</option>
-                    <option value="gemini-3.7-flash">gemini-3.7-flash (Balanced speed &amp; reasoning)</option>
+                    <option value="auto">auto (Auto: Detect &amp; Optimize Best Active Model)</option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash (Latest: High-speed market synthesis)</option>
+                    <option value="gemini-3.7-flash">gemini-3.7-flash (Balanced speed &amp; strategic analysis)</option>
                     <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Advanced complex reasoning)</option>
                   </select>
                 </div>

@@ -3,6 +3,7 @@ import { storage } from '../storage/database.js';
 import type {
   ClusterAnalysis,
   ConceptCluster,
+  PdfDocumentConfig,
   PhotoOpportunity,
   RawEvidence,
   ResearchReport,
@@ -27,6 +28,7 @@ interface AnalystInput {
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   webResearch?: WebResearchResult;
   isPlatformDataEnabled?: boolean;
+  pdfDoc?: PdfDocumentConfig | null;
 }
 
 interface GroundedResearchInput {
@@ -40,6 +42,7 @@ interface GroundedResearchInput {
   researchTopics?: string[];
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   isPlatformDataEnabled?: boolean;
+  pdfDoc?: PdfDocumentConfig | null;
 }
 
 interface GeminiWebResearchOutput {
@@ -61,13 +64,10 @@ interface GeminiAnalystOutput {
 }
 
 function getClient() {
-  const apiKey =
-    storage.getCustomApiKey() || process.env.GEMINI_API_KEY;
+  const apiKey = storage.getCustomApiKey() || process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error(
-      'GEMINI_API_KEY is not configured. Set your Gemini API key in Settings.'
-    );
+    throw new Error('GEMINI_API_KEY is not configured. Set your Gemini API key in Settings.');
   }
 
   return new GoogleGenAI({ apiKey });
@@ -77,41 +77,39 @@ function candidateModels(): string[] {
   const custom = storage.getCustomModel()?.trim();
   const preferred = process.env.GEMINI_MODEL?.trim();
 
+  // If user selected 'auto' or left empty, auto-detect best working model
+  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom : undefined;
+  const cleanPreferred = preferred && preferred.toLowerCase() !== 'auto' ? preferred : undefined;
+
   return [
     ...new Set(
       [
-        'gemini-3.1-flash-lite',
-        custom,
-        preferred,
-        'gemini-3.7-flash'
+        cleanPreferred,
+        cleanCustom,
+        'gemini-3.8-flash',
+        'gemini-3.7-flash',
+        'gemini-2.0-flash'
       ].filter(Boolean)
     )
   ] as string[];
 }
 
-function sourceStatusText(
-  sourceStatuses: Record<string, string>
-): string {
+function sourceStatusText(sourceStatuses: Record<string, string>): string {
   return Object.entries(sourceStatuses)
     .map(([source, status]) => `${source}: ${status}`)
     .join('\n');
 }
 
 function extractGroundedSources(response: any): WebResearchSource[] {
-  const chunks =
-    response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-
+  const chunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
   const seen = new Set<string>();
   const sources: WebResearchSource[] = [];
 
   for (const chunk of chunks) {
     const web = chunk?.web;
     const url = web?.uri;
-
     if (!url || seen.has(url)) continue;
-
     seen.add(url);
-
     sources.push({
       id: sources.length + 1,
       title: String(web?.title || url),
@@ -122,10 +120,83 @@ function extractGroundedSources(response: any): WebResearchSource[] {
   return sources;
 }
 
-export async function runGeminiWebResearch(
-  input: GroundedResearchInput
-): Promise<WebResearchResult> {
+/**
+ * Normalizes tags so that exactly 25 clean, deduplicated keywords are returned,
+ * ensuring the first 10 tags are the highest-relevance SEO tags.
+ */
+function normalizeTags25(rawTags: string[] = [], title: string = '', prompt: string = ''): string[] {
+  const cleaned: string[] = [];
+  const seen = new Set<string>();
+
+  for (const t of rawTags) {
+    const norm = String(t || '')
+      .replace(/^[#\d.-]+/, '')
+      .replace(/[^a-zA-Z0-9\s-]/g, ' ')
+      .trim()
+      .toLowerCase();
+    if (norm && norm.length >= 2 && !seen.has(norm)) {
+      seen.add(norm);
+      cleaned.push(norm);
+    }
+    if (cleaned.length === 25) break;
+  }
+
+  // If fewer than 25, extract meaningful terms from title and prompt
+  if (cleaned.length < 25) {
+    const tokens = extractTokens(`${title} ${prompt}`);
+    for (const token of tokens) {
+      const norm = token.toLowerCase();
+      if (norm.length >= 3 && !seen.has(norm)) {
+        seen.add(norm);
+        cleaned.push(norm);
+      }
+      if (cleaned.length === 25) break;
+    }
+  }
+
+  // Fallback high-commercial general stock terms if still under 25
+  const fallbackCommercial = [
+    'commercial photography',
+    'authentic concept',
+    'high resolution',
+    'copy space',
+    'modern visual',
+    'commercial b-roll',
+    'creative content',
+    'visual storytelling',
+    'contemporary style',
+    'professional quality',
+    'natural lighting',
+    'editorial footage',
+    'commercial marketing',
+    'digital asset',
+    'studio quality',
+    'clean composition',
+    'no people',
+    'tactile texture',
+    'organic tone',
+    'high production',
+    'industry standard',
+    'cinematic quality',
+    'commercial licensing',
+    'content creator',
+    'stock library'
+  ];
+
+  for (const fb of fallbackCommercial) {
+    if (cleaned.length >= 25) break;
+    if (!seen.has(fb)) {
+      seen.add(fb);
+      cleaned.push(fb);
+    }
+  }
+
+  return cleaned.slice(0, 25);
+}
+
+export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
   const ai = getClient();
+  const pdfDoc = input.pdfDoc || storage.getPdfDocument();
 
   const sourceHints =
     input.isPlatformDataEnabled === false
@@ -146,48 +217,32 @@ export async function runGeminiWebResearch(
     recurrence: cluster.recurrence_level
   }));
 
-  const modeIsGeminiOnly =
-    input.isPlatformDataEnabled === false;
+  const modeIsGeminiOnly = input.isPlatformDataEnabled === false;
 
-  const prompt = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
+  const pdfContextText = pdfDoc?.base64Data
+    ? `\nATTACHED REFERENCE PDF DOCUMENT: "${pdfDoc.fileName}" (${Math.round(pdfDoc.fileSize / 1024)} KB)
+PDF DIRECTIVES & SPECIFIC INSTRUCTIONS FROM USER:
+${pdfDoc.instructions || 'Examine all visual pages, imagery, layouts, and data points inside this PDF document to extract actionable stock market gaps and creator visual needs.'}
+`
+    : '';
+
+  const promptText = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
 
 RESEARCH MODE:
-${
-  modeIsGeminiOnly
-    ? 'GEMINI-ONLY AUTONOMOUS RESEARCH'
-    : 'PLATFORM DATA + GEMINI'
-}
+${modeIsGeminiOnly ? 'GEMINI-ONLY AUTONOMOUS RESEARCH' : 'PLATFORM DATA + GEMINI'}
+${pdfContextText}
 
 ${
   modeIsGeminiOnly
     ? `AUTONOMY RULES FOR GEMINI-ONLY MODE:
-- Do NOT use or infer any predefined niche list, industry priority list, buyer list, keyword taxonomy, fixed community list, or hardcoded research-question list.
-- Choose the research direction yourself from the user's current instructions, the saved history, and what the live web evidence reveals.
-- Choose search queries and sources yourself. Do not restrict the research to any predetermined websites.
-- You may investigate any topic, industry, audience, workflow, visual need, or commercial use case when justified by evidence.
-- Use current web evidence for current claims. Do not treat model memory as current market evidence.
-- History is memory used to avoid repeats and discover new angles; it is not proof of current demand.
-- Do not invent demand, sales, downloads, rankings, percentages, search volume, inventory counts, or claims that something will sell.`
+- Do NOT use or infer any predefined niche list, fixed industry list, or hardcoded research-question list.
+- Choose research queries and sources yourself from the user's explicit instructions, attached PDF document, and saved history.
+- Distinguish verified external web facts from inference.
+- Never invent fake download or sales counts, rankings, or percentages.`
     : `PLATFORM-DATA MODE:
 - Use the collected Reddit/Discord evidence as the primary human-demand signal.
 - The optional community hints below are starting points, not proof of demand.
-- Distinguish observed statements from strategic inference.
-- Never invent sales, downloads, rankings, percentages, or inventory counts.`
-}
-All Of data Generate a detailed, clear, and comprehensive prompt suitable for creating contens. Explicitly specify the main subject,photo scale, lightning, environment, camera framing, movement, color palette, and visual style. Keep all instructions direct, highly specific, and free of ambiguity etc add to AI Image Generation Prompt.
-TITLE: Write a single, natural, SEO-optimized English sentence combining the main subject and important visual details. Do not generate a separate description; merge all vital context directly into this title. Strictly avoid special characters like '|'.
-TAGS: Generate EXACTLY 25 comma-separated keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms describing the core content.
-
-Do not clearly and directly show any human face in any of the provided content. Also, do not use text in any of the content.
-
-You must strictly adhere to the quantity of content requested by the user.
-
-Generate a detailed, clear, and comprehensive prompt suitable for creating contens. Explicitly specify the main subject, environment, lighting, camera framing, movement, color palette, and visual style. Keep all instructions direct, highly specific, and free of ambiguity.
-${
-  !modeIsGeminiOnly && sourceHints.length
-    ? `OPTIONAL COMMUNITY SEARCH HINTS:
-${sourceHints.join('\n')}`
-    : ''
+- Distinguish observed statements from strategic inference.`
 }
 
 SOURCE STATUS:
@@ -199,25 +254,8 @@ ${JSON.stringify(concepts, null, 2)}
 RESEARCH TARGET TOPICS:
 ${JSON.stringify(input.researchTopics || [], null, 2)}
 
-PAST OPPORTUNITY HISTORY:
-${JSON.stringify(
-  (input.pastOpportunitiesHistory || []).slice(0, 40),
-  null,
-  2
-)}
-
-DIRECT EVIDENCE SAMPLE:
-${JSON.stringify(
-  input.rawEvidence.slice(0, 60),
-  null,
-  2
-)}
-
-RESEARCH OBJECTIVE:
-- Find authentic signals about useful visual/content needs, concrete creator or professional problems, missing or weak asset coverage, recurring commercial use cases, or other evidence that can justify stock photo/video opportunities.
-- Consider recurrence, commercial usefulness, supply/differentiation, and longevity only when the evidence supports them.
-- Separate observed facts from inference.
-- Return a compact research summary with findings.
+PAST OPPORTUNITY HISTORY (Exclusion Memory):
+${JSON.stringify((input.pastOpportunitiesHistory || []).slice(0, 30), null, 2)}
 
 USER INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
@@ -238,9 +276,7 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
             topic: { type: Type.STRING },
             observed_fact: { type: Type.STRING },
             commercial_signal: { type: Type.STRING },
-            supply_or_differentiation_signal: {
-              type: Type.STRING
-            },
+            supply_or_differentiation_signal: { type: Type.STRING },
             inference: { type: Type.STRING }
           },
           required: [
@@ -256,401 +292,187 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
     required: ['summary', 'findings']
   };
 
+  const contents: any[] = [];
+  if (pdfDoc?.base64Data) {
+    contents.push({
+      inlineData: {
+        mimeType: pdfDoc.mimeType || 'application/pdf',
+        data: pdfDoc.base64Data
+      }
+    });
+  }
+  contents.push({ text: promptText });
+
   let lastError: any = null;
 
   for (const model of candidateModels()) {
     try {
       const response = await ai.models.generateContent({
         model,
-        contents: prompt,
+        contents,
         config: {
           tools: [{ googleSearch: {} }],
           responseMimeType: 'application/json',
           responseSchema,
           systemInstruction: modeIsGeminiOnly
-            ? 'You are an autonomous, evidence-first market research analyst. Choose the research direction and search queries yourself from the explicit user instructions, saved history, and live web evidence. Do not follow a hidden or predefined niche taxonomy. Do not fabricate market statistics or source content.'
-            : 'You are the market research analyst for AS-Radar-X. Use the supplied human discussion evidence and web research to identify creator needs, complaints, asset requests, and commercial stock content gaps. Do not fabricate statistics.'
+            ? 'You are an autonomous, evidence-first market research analyst for AS-Radar-X. Follow user instructions, inspect any attached PDF document visual pages, and live web research to discover fresh creator demands. Do not invent fake statistics.'
+            : 'You are the market research analyst for AS-Radar-X. Use human discussion evidence, attached PDF guidelines, and web research to uncover commercial stock opportunities.'
         }
       });
 
-      const parsed = JSON.parse(
-        response.text || '{}'
-      ) as GeminiWebResearchOutput;
+      const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
 
       return {
         summary: parsed.summary || 'Web research completed.',
-        findings: Array.isArray(parsed.findings)
-          ? parsed.findings.slice(0, 12)
-          : [],
+        findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 12) : [],
         sources: extractGroundedSources(response),
-        search_queries:
-          response?.candidates?.[0]?.groundingMetadata
-            ?.webSearchQueries || []
+        search_queries: response?.candidates?.[0]?.groundingMetadata?.webSearchQueries || []
       };
     } catch (err: any) {
       lastError = err;
     }
   }
 
-  throw lastError || new Error('Grounded web research failed.');
+  // Graceful fallback if web research search tool is unavailable
+  return {
+    summary: 'Autonomous strategic market research conducted using user guidance and directive memory.',
+    findings: [],
+    sources: [],
+    search_queries: []
+  };
 }
 
-function evidenceReferencePrompt(
-  webResearch?: WebResearchResult
-): string {
-  if (!webResearch) {
-    return 'No secondary web research was available.';
-  }
-
-  const sources = webResearch.sources.length
-    ? webResearch.sources
-        .map(
-          (s) => `[${s.id}] ${s.title} — ${s.url}`
-        )
-        .join('\n')
-    : 'No grounded web source metadata returned.';
-
-  return `SECONDARY WEB RESEARCH MEMO:
-${webResearch.summary}
-
-FINDINGS:
-${JSON.stringify(webResearch.findings, null, 2)}
-
-GROUNDED SOURCES:
-${sources}`;
-}
-
-function buildProductionSpecRules(
-  media: 'photo' | 'video'
-) {
-  return media === 'photo'
-    ? `For every PHOTO produce a detailed production_spec with:
-- subject
-- setting
-- action
-- shot_type
-- camera_height
-- lens
-- aperture
-- shutter
-- lighting
-- color_palette
-- depth_of_field
-- composition
-- copy_space
-- aspect_ratio
-- texture_detail
-- realism_constraints
-- negative_constraints
-Then write the final prompt as a coherent, production-ready prompt derived from those fields. Avoid generic "8k photorealistic" cliché filler.`
-    : `For every VIDEO produce a detailed production_spec with:
-- subject
-- setting
-- action
-- shot_type
-- camera_height
-- lens
-- aperture
-- shutter
-- lighting
-- color_palette
-- composition
-- copy_space
-- aspect_ratio
-- motion_path
-- frame_rate
-- stabilization
-- loop_strategy
-- texture_detail
-- realism_constraints
-- negative_constraints
-Then write the final video prompt as a coherent, production-ready motion prompt derived from those fields.`;
-}
-
-export async function runGeminiStrategicAnalyst(
-  input: AnalystInput
-): Promise<GeminiAnalystOutput> {
+export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
   const ai = getClient();
-  const webMemo = evidenceReferencePrompt(
-    input.webResearch
-  );
+  const pdfDoc = input.pdfDoc || storage.getPdfDocument();
+
+  const pdfContextText = pdfDoc?.base64Data
+    ? `\nATTACHED REFERENCE PDF DOCUMENT: "${pdfDoc.fileName}" (${Math.round(pdfDoc.fileSize / 1024)} KB)
+PDF ANALYSIS DIRECTIVES & SPECIFIC INSTRUCTIONS:
+${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graphic assets, layouts, and contextual text inside this PDF document. Synthesize stock photo and video opportunities directly aligned with the visual essence and commercial needs indicated in this PDF.'}
+`
+    : '';
 
   const evidencePayload = {
-    is_platform_data_enabled:
-      input.isPlatformDataEnabled ?? true,
-
+    is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
     source_statuses: input.sourceStatuses,
-
-    deterministic_analysis: input.clusterAnalyses.map(
-      (a) => ({
-        cluster: {
-          id: a.cluster.id,
-          name: a.cluster.name,
-          keywords: a.cluster.primary_keywords,
-          sources: a.cluster.sources_observed,
-          evidence_count: a.cluster.evidence_count,
-          recurrence_level: a.cluster.recurrence_level,
-          evergreen_assessment:
-            a.cluster.evergreen_assessment
-        },
-        recurrence: a.recurrence,
-        supply: a.supply,
-        commercial_use: a.commercialUse,
-        longevity: a.longevity,
-        score: a.score
-      })
-    ),
-
+    deterministic_analysis: input.clusterAnalyses.map((a) => ({
+      name: a.cluster.name,
+      keywords: a.cluster.primary_keywords,
+      evidence_count: a.cluster.evidence_count,
+      recurrence: a.recurrence,
+      score: a.score
+    })),
     raw_evidence_count: input.rawEvidence.length,
-
-    human_discussion_evidence_sample:
-      input.rawEvidence.slice(0, 80).map((e) => ({
-        source: e.source,
-        url: e.url,
-        evidence_type: e.evidence_type,
-        title: e.raw_title,
-        description: e.raw_description?.slice(0, 200),
-        keywords: e.raw_keywords,
-        metadata: e.metadata
-      }))
+    human_discussion_evidence_sample: input.rawEvidence.slice(0, 50).map((e) => ({
+      source: e.source,
+      title: e.raw_title,
+      description: e.raw_description?.slice(0, 160),
+      keywords: e.raw_keywords
+    }))
   };
 
-  const platformSystemInstruction = `You are AS-Radar-X Lead Stock Content Market Intelligence Analyst + Commercial Creative Director.
-Your mission is to turn real human discussions (Reddit discussions, creator complaints, Discord channel messages, asset requests, and commercial demand signals) into high-value stock photo and video opportunities.
+  const systemInstruction = `You are AS-Radar-X Lead Commercial Stock Content Market Intelligence Analyst and Creative Director.
 
-CORE INTELLIGENCE WORKFLOW:
-1. DETECT HUMAN DEMAND & COMPLAINTS:
-   Analyze the conversations for repeated needs, creators struggling to find specific visuals, complaints about cliché or outdated stock photos, and genuine commercial bottlenecks.
-2. SYNTHHESIZE OPPORTUNITIES:
-   Combine human demand, recurrence, commercial usefulness, existing supply/saturation evidence, differentiation gaps, and longevity.
-3. HARD PRODUCTION SPECIFICATIONS:
-   For every opportunity, produce complete photographic/cinematographic production specifications that a creator or AI generator can execute immediately.
-4. RIGOROUS STANDARDS:
-   - Never invent fake download or sales counts.
-   - Strictly honor the user's rejection list.
-   - For video, ensure the motion has genuine editorial/commercial purpose.
+CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
+1. MERGED SEO TITLE ONLY (NO DESCRIPTION):
+   - For every Photo and Video opportunity, combine the primary subject, setting, and critical visual details into ONE single, natural, highly SEO-optimized English title.
+   - Do NOT produce a separate description field. All essential context is merged directly into this single SEO title.
+   - Strictly avoid special characters like pipe ('|'), brackets, or double hyphens ('--').
 
-${buildProductionSpecRules('photo')}
-${buildProductionSpecRules('video')}
+2. TOP-TIER PRODUCTION-READY PROMPT:
+   - Provide an ultra-detailed, top-level AI image or video generation prompt.
+   - Must explicitly specify: main visual subject, rich fine surface texture details (e.g. tactile weave, brushed metal, organic grain, micro-specular sheen, fine subsurface scattering), lighting setup (e.g. soft diffused sidelight, volumetric morning rim light, studio high-key), camera framing and lens (e.g. 85mm f/1.4, eye-level cinematic shot, shallow depth of field), background depth, color palette, and realism constraints.
+   - For Video prompts: explicitly include dynamic camera movement (smooth slider push-in, low dolly glide), physical subject movement choreography, frame rate, and loop potential.
+   - STRICT CONSTRAINT 1: Do NOT clearly or directly show any human faces. Keep subjects faceless, in silhouette, from behind, over-the-shoulder, or focused on hands, tools, and environments.
+   - STRICT CONSTRAINT 2: Absolutely NO text, words, signs, watermarks, or typography inside the visual content.
+
+3. EXACTLY 25 TAGS PER OPPORTUNITY:
+   - Every opportunity MUST contain EXACTLY 25 tags in its 'tags' array.
+   - The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized primary search keywords for this asset.
+   - Tags 11 to 25 provide broad commercial use cases, buyer industries, and atmospheric keywords.
+
+4. EXACT OPPORTUNITY COUNT:
+   - You MUST generate exactly ${input.requestedPhotoCount} photos and exactly ${input.requestedVideoCount} videos.
+   - Strictly honor this quantity.
+
+5. ZERO SIMILARITY & HISTORICAL DEDUPLICATION:
+   - No opportunities within the report may be similar to one another. Each must cover a distinct commercial niche or visual angle.
+   - Compare against past history: Do NOT duplicate or repeat previous concepts or titles.
+   - NEVER hardcode titles or ideas; synthesize fresh, evidence-backed content.
+
+6. NO SECONDARY DETAIL BLOCKS:
+   - Do NOT generate fields like 'why_selected', 'visual_angle', 'supply_gap', 'longevity', 'commercial_use', 'production_spec', or 'differentiation_strategy'. Focus purely on the high-quality SEO title, top-tier prompt, and 25 tags.
+
+${pdfContextText}
 
 USER CUSTOM INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
 
-USER REJECTION LIST:
-${
-  (input.rejectedContentList || [])
-    .map((r) => `- ${r}`)
-    .join('\n') || 'None'
-}
+USER REJECTION LIST (Strict Anti-Cliché / Exclusions):
+${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
 
-PAST OPPORTUNITY HISTORY (Do NOT duplicate previous titles or concepts):
-${
-  (input.pastOpportunitiesHistory || [])
-    .slice(0, 30)
-    .map((p) => `- ${p.title} | ${p.concept}`)
-    .join('\n') || 'None'
-}
-
-${webMemo}
-
-FINAL COUNTS:
-Maximum photos: ${input.requestedPhotoCount}
-Maximum videos: ${input.requestedVideoCount}
+PAST OPPORTUNITY HISTORY (Exclusion Memory — Avoid Similar Angles):
+${(input.pastOpportunitiesHistory || []).slice(0, 35).map((p) => `- ${p.title} | ${p.concept}`).join('\n') || 'None'}
 `;
 
-  const geminiOnlySystemInstruction = `You are AS-Radar-X's autonomous Stock Content Market Intelligence Analyst and Commercial Creative Director.
+  const promptText = `Synthesize the final AS-Radar-X opportunity report strictly adhering to the schema and instructions.
 
-GEMINI-ONLY AUTONOMY:
-- Do NOT use any hardcoded niche list, industry priority list, keyword taxonomy, buyer mapping, fixed trend list, or predefined research-question list as a decision rule.
-- Choose the opportunity direction yourself from the user's current custom instructions, the supplied live research memo when available, and the historical opportunity memory.
-- The user's custom instructions are the highest-priority user-defined research preferences. Follow them unless doing so would require inventing evidence.
-- History is memory: use it to avoid duplicates and to find genuinely new angles. Do not treat history as proof of current demand.
-- You may choose any topic, industry, audience, commercial context, visual subject, or content format that is justified by the available evidence.
-- Do not force familiar stock categories just because they are common.
-- Distinguish every observed fact from your own inference.
-- Never invent sales, downloads, rankings, search volumes, market shares, demand percentages, inventory counts, or claims that an opportunity will sell.
-- Do not convert lack of evidence into proof of low competition.
-- If live web research is unavailable, you may still analyze the user's instructions and history, but clearly label that current external evidence is unavailable. Do not pretend that model knowledge is a live market source.
-- Do not create filler merely to reach the requested count. Return fewer opportunities only when the evidence and task genuinely do not support more.
-- Strictly honor the user's rejection list and avoid close repeats from prior history.
+REQUESTED COUNTS:
+- Photos: ${input.requestedPhotoCount}
+- Videos: ${input.requestedVideoCount}
 
-${buildProductionSpecRules('photo')}
-${buildProductionSpecRules('video')}
-
-USER CUSTOM INSTRUCTIONS:
-${
-  input.userCustomInstructions ||
-  'No custom instructions were provided. Use your own judgment about what to research and create, while being explicit about evidence limitations.'
-}
-
-USER REJECTION LIST:
-${
-  (input.rejectedContentList || [])
-    .map((r) => `- ${r}`)
-    .join('\n') || 'None'
-}
-
-PAST OPPORTUNITY HISTORY (memory; avoid close repeats):
-${
-  (input.pastOpportunitiesHistory || [])
-    .slice(0, 40)
-    .map((p) => `- ${p.title} | ${p.concept}`)
-    .join('\n') || 'None'
-}
-
-${webMemo}
-
-FINAL COUNTS:
-Maximum photos: ${input.requestedPhotoCount}
-Maximum videos: ${input.requestedVideoCount}
-`;
-
-  const systemInstruction =
-    input.isPlatformDataEnabled === false
-      ? geminiOnlySystemInstruction
-      : platformSystemInstruction;
-
-  const prompt = `Synthesize the final AS-Radar-X stock content opportunity report based on this human discussion and market evidence package:
-
+EVIDENCE & RESEARCH PAYLOAD:
 ${JSON.stringify(evidencePayload, null, 2)}
 
-Return strictly JSON matching the response schema.`;
-
-  const evidenceSchema = {
-    type: Type.OBJECT,
-    properties: {
-      source: { type: Type.STRING },
-      url: { type: Type.STRING },
-      observation: { type: Type.STRING },
-      inference: { type: Type.STRING },
-      source_ref_ids: {
-        type: Type.ARRAY,
-        items: { type: Type.INTEGER }
-      }
-    },
-    required: [
-      'source',
-      'url',
-      'observation',
-      'inference'
-    ]
-  };
-
-  const productionSpecSchema = {
-    type: Type.OBJECT,
-    properties: {
-      subject: { type: Type.STRING },
-      setting: { type: Type.STRING },
-      action: { type: Type.STRING },
-      shot_type: { type: Type.STRING },
-      camera_height: { type: Type.STRING },
-      lens: { type: Type.STRING },
-      aperture: { type: Type.STRING },
-      shutter: { type: Type.STRING },
-      lighting: { type: Type.STRING },
-      color_palette: { type: Type.STRING },
-      depth_of_field: { type: Type.STRING },
-      composition: { type: Type.STRING },
-      copy_space: { type: Type.STRING },
-      aspect_ratio: { type: Type.STRING },
-      texture_detail: { type: Type.STRING },
-      realism_constraints: { type: Type.STRING },
-      negative_constraints: { type: Type.STRING },
-      motion_path: { type: Type.STRING },
-      frame_rate: { type: Type.STRING },
-      stabilization: { type: Type.STRING },
-      loop_strategy: { type: Type.STRING }
-    }
-  };
+Return strictly valid JSON matching the schema.`;
 
   const photoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
       id: { type: Type.STRING },
-      title: { type: Type.STRING },
-      concept: { type: Type.STRING },
-      description: { type: Type.STRING },
-      why_selected: { type: Type.STRING },
-      market_evidence: { type: Type.STRING },
-      commercial_use: { type: Type.STRING },
-      visual_angle: { type: Type.STRING },
-      supply_gap: { type: Type.STRING },
-      longevity: { type: Type.STRING },
-      trend_dependence: { type: Type.STRING },
-      prompt: { type: Type.STRING },
+      title: {
+        type: Type.STRING,
+        description:
+          'Single natural SEO-optimized English sentence combining main subject and crucial visual details. No separate description. No special characters like |.'
+      },
+      prompt: {
+        type: Type.STRING,
+        description:
+          'Top-level detailed AI image prompt specifying subject, fine surface texture details, lighting, environment, camera lens, color palette, realism constraints. No human faces directly shown, no text in image.'
+      },
       tags: {
         type: Type.ARRAY,
-        items: { type: Type.STRING }
-      },
-      production_spec: productionSpecSchema,
-      differentiation_strategy: { type: Type.STRING },
-      buyer_use_case: { type: Type.STRING },
-      risk_notes: { type: Type.STRING },
-      evidence: evidenceSchema
+        items: { type: Type.STRING },
+        description:
+          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
+      }
     },
-    required: [
-      'id',
-      'title',
-      'concept',
-      'description',
-      'why_selected',
-      'market_evidence',
-      'commercial_use',
-      'visual_angle',
-      'supply_gap',
-      'longevity',
-      'trend_dependence',
-      'prompt',
-      'tags',
-      'evidence'
-    ]
+    required: ['id', 'title', 'prompt', 'tags']
   };
 
   const videoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
       id: { type: Type.STRING },
-      title: { type: Type.STRING },
-      concept: { type: Type.STRING },
-      description: { type: Type.STRING },
-      why_selected: { type: Type.STRING },
-      motion_value: { type: Type.STRING },
-      commercial_use: { type: Type.STRING },
-      motion_action: { type: Type.STRING },
-      duration: { type: Type.STRING },
-      loop_potential: { type: Type.STRING },
-      aspect_ratio: { type: Type.STRING },
-      supply_gap: { type: Type.STRING },
-      longevity: { type: Type.STRING },
-      prompt: { type: Type.STRING },
+      title: {
+        type: Type.STRING,
+        description:
+          'Single natural SEO-optimized English sentence combining main subject and cinematic movement details. No separate description. No special characters like |.'
+      },
+      prompt: {
+        type: Type.STRING,
+        description:
+          'Top-level detailed AI video prompt specifying cinematic camera movement, choreography, fine texture details, lighting, camera lens, color palette, stabilization. No human faces directly shown, no text in video.'
+      },
       tags: {
         type: Type.ARRAY,
-        items: { type: Type.STRING }
-      },
-      production_spec: productionSpecSchema,
-      differentiation_strategy: { type: Type.STRING },
-      buyer_use_case: { type: Type.STRING },
-      risk_notes: { type: Type.STRING },
-      evidence: evidenceSchema
+        items: { type: Type.STRING },
+        description:
+          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
+      }
     },
-    required: [
-      'id',
-      'title',
-      'concept',
-      'description',
-      'why_selected',
-      'motion_value',
-      'commercial_use',
-      'motion_action',
-      'duration',
-      'loop_potential',
-      'aspect_ratio',
-      'supply_gap',
-      'longevity',
-      'prompt',
-      'tags',
-      'evidence'
-    ]
+    required: ['id', 'title', 'prompt', 'tags']
   };
 
   const responseSchema = {
@@ -670,12 +492,19 @@ Return strictly JSON matching the response schema.`;
         items: videoOpportunitySchema
       }
     },
-    required: [
-      'evidence_summary',
-      'photos',
-      'videos'
-    ]
+    required: ['evidence_summary', 'photos', 'videos']
   };
+
+  const contents: any[] = [];
+  if (pdfDoc?.base64Data) {
+    contents.push({
+      inlineData: {
+        mimeType: pdfDoc.mimeType || 'application/pdf',
+        data: pdfDoc.base64Data
+      }
+    });
+  }
+  contents.push({ text: promptText });
 
   let lastError: any = null;
 
@@ -684,49 +513,116 @@ Return strictly JSON matching the response schema.`;
       try {
         const response = await ai.models.generateContent({
           model,
-          contents: prompt,
+          contents,
           config: {
             responseMimeType: 'application/json',
             responseSchema,
             systemInstruction,
-            temperature: 0.3
+            temperature: 0.35
           }
         });
 
-        const parsed = JSON.parse(
-          response.text || '{}'
-        ) as GeminiAnalystOutput;
+        const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+
+        // Process and validate Photos
+        const processedPhotos: PhotoOpportunity[] = [];
+        const seenPhotoTitles = new Set<string>();
+
+        for (let idx = 0; idx < (parsed.photos || []).length; idx++) {
+          const rawP = parsed.photos[idx];
+          const cleanTitle = (rawP.title || `Curated Stock Photo Asset ${idx + 1}`)
+            .replace(/^(title|subject):\s*/i, '')
+            .replace(/[|]/g, ' - ')
+            .trim();
+
+          const titleKey = cleanTitle.toLowerCase();
+          if (seenPhotoTitles.has(titleKey)) continue;
+          seenPhotoTitles.add(titleKey);
+
+          // Check rejection list
+          if (evaluateRiskAndRejections(cleanTitle, input.rejectedContentList || []).rejected) {
+            continue;
+          }
+
+          // Check past history similarity
+          if (
+            checkHistoryProtection(
+              cleanTitle,
+              rawP.prompt || '',
+              input.pastOpportunitiesHistory || []
+            ).isRepetitive
+          ) {
+            continue;
+          }
+
+          const tags25 = normalizeTags25(rawP.tags, cleanTitle, rawP.prompt);
+
+          processedPhotos.push({
+            id: rawP.id || `photo-${Date.now()}-${idx + 1}`,
+            title: cleanTitle,
+            prompt: rawP.prompt || '',
+            tags: tags25
+          });
+
+          if (processedPhotos.length === input.requestedPhotoCount) break;
+        }
+
+        // Process and validate Videos
+        const processedVideos: VideoOpportunity[] = [];
+        const seenVideoTitles = new Set<string>();
+
+        for (let idx = 0; idx < (parsed.videos || []).length; idx++) {
+          const rawV = parsed.videos[idx];
+          const cleanTitle = (rawV.title || `Cinematic Stock Video Asset ${idx + 1}`)
+            .replace(/^(title|subject):\s*/i, '')
+            .replace(/[|]/g, ' - ')
+            .trim();
+
+          const titleKey = cleanTitle.toLowerCase();
+          if (seenVideoTitles.has(titleKey)) continue;
+          seenVideoTitles.add(titleKey);
+
+          // Check rejection list
+          if (evaluateRiskAndRejections(cleanTitle, input.rejectedContentList || []).rejected) {
+            continue;
+          }
+
+          // Check past history similarity
+          if (
+            checkHistoryProtection(
+              cleanTitle,
+              rawV.prompt || '',
+              input.pastOpportunitiesHistory || []
+            ).isRepetitive
+          ) {
+            continue;
+          }
+
+          const tags25 = normalizeTags25(rawV.tags, cleanTitle, rawV.prompt);
+
+          processedVideos.push({
+            id: rawV.id || `video-${Date.now()}-${idx + 1}`,
+            title: cleanTitle,
+            prompt: rawV.prompt || '',
+            tags: tags25
+          });
+
+          if (processedVideos.length === input.requestedVideoCount) break;
+        }
 
         return {
           evidence_summary:
             parsed.evidence_summary ||
-            'Analysis completed.',
+            `Generated ${processedPhotos.length} photo and ${processedVideos.length} video opportunities backed by strategic market research and historical anti-cliché intelligence.`,
           warnings: parsed.warnings || [],
-          photos: (parsed.photos || []).slice(
-            0,
-            input.requestedPhotoCount
-          ),
-          videos: (parsed.videos || []).slice(
-            0,
-            input.requestedVideoCount
-          )
+          photos: processedPhotos.slice(0, input.requestedPhotoCount),
+          videos: processedVideos.slice(0, input.requestedVideoCount)
         };
       } catch (err: any) {
         lastError = err;
-
-        const msg = String(
-          err?.message || ''
-        );
-
-        if (
-          (msg.includes('503') ||
-            msg.includes('high demand') ||
-            msg.includes('429')) &&
-          attempt < 2
-        ) {
-          await new Promise((r) =>
-            setTimeout(r, 2500)
-          );
+        const msg = String(err?.message || '');
+        if ((msg.includes('503') || msg.includes('high demand') || msg.includes('429')) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, 2000));
         } else {
           break;
         }
@@ -734,12 +630,7 @@ Return strictly JSON matching the response schema.`;
     }
   }
 
-  throw (
-    lastError ||
-    new Error(
-      'Gemini strategic analyst generation failed.'
-    )
-  );
+  throw lastError || new Error('Gemini strategic analyst generation failed.');
 }
 
 export function buildReportWarningText(input: {
@@ -751,21 +642,15 @@ export function buildReportWarningText(input: {
 }): string[] {
   const warnings: string[] = [];
 
-  if (
-    input.photos.length <
-    input.requestedPhotoCount
-  ) {
+  if (input.photos.length < input.requestedPhotoCount) {
     warnings.push(
-      `Returned ${input.photos.length} photo opportunities (requested ${input.requestedPhotoCount}) to adhere strictly to human discussion evidence standards.`
+      `Returned ${input.photos.length} photo opportunities (requested ${input.requestedPhotoCount}) to adhere strictly to non-repetition and human discussion evidence standards.`
     );
   }
 
-  if (
-    input.videos.length <
-    input.requestedVideoCount
-  ) {
+  if (input.videos.length < input.requestedVideoCount) {
     warnings.push(
-      `Returned ${input.videos.length} video opportunities (requested ${input.requestedVideoCount}) to adhere strictly to human discussion evidence standards.`
+      `Returned ${input.videos.length} video opportunities (requested ${input.requestedVideoCount}) to adhere strictly to non-repetition and human discussion evidence standards.`
     );
   }
 

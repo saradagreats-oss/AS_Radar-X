@@ -15,7 +15,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '35mb' }));
+app.use(express.urlencoded({ extended: true, limit: '35mb' }));
 
 // API Endpoints
 
@@ -119,6 +120,53 @@ app.delete('/api/rejected-content/:index', (req: Request, res: Response) => {
   }
   storage.deleteRejectedContent(index);
   res.json({ success: true, items: storage.getRejectedContent() });
+});
+
+// 6.1 PDF Document & Directives
+app.get('/api/pdf-instruction', (_req: Request, res: Response) => {
+  const doc = storage.getPdfDocument();
+  res.json({
+    hasPdf: !!doc && !!doc.base64Data,
+    fileName: doc?.fileName || '',
+    fileSize: doc?.fileSize || 0,
+    instructions: doc?.instructions || '',
+    uploadedAt: doc?.uploadedAt || ''
+  });
+});
+
+app.post('/api/pdf-instruction', (req: Request, res: Response) => {
+  try {
+    const { fileName, fileSize, mimeType, base64Data, instructions } = req.body || {};
+    if (!base64Data || typeof base64Data !== 'string') {
+      res.status(400).json({ success: false, error: 'Valid PDF document data is required.' });
+      return;
+    }
+    const cleanBase64 = base64Data.replace(/^data:application\/pdf;base64,/i, '').trim();
+    storage.savePdfDocument({
+      fileName: (fileName || 'document.pdf').trim(),
+      fileSize: Number(fileSize) || 0,
+      mimeType: mimeType || 'application/pdf',
+      base64Data: cleanBase64,
+      instructions: typeof instructions === 'string' ? instructions.slice(0, 3000) : '',
+      uploadedAt: new Date().toISOString()
+    });
+    const saved = storage.getPdfDocument();
+    res.json({
+      success: true,
+      hasPdf: true,
+      fileName: saved?.fileName,
+      fileSize: saved?.fileSize,
+      instructions: saved?.instructions,
+      uploadedAt: saved?.uploadedAt
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed saving PDF document' });
+  }
+});
+
+app.delete('/api/pdf-instruction', (_req: Request, res: Response) => {
+  storage.clearPdfDocument();
+  res.json({ success: true, hasPdf: false, instructions: '' });
 });
 
 // 7. Raw Evidence for Research Job
@@ -349,6 +397,7 @@ app.get('/api/gemini/config', (_req: Request, res: Response) => {
     activeKeyMasked: activeKey ? `${activeKey.slice(0, 6)}...${activeKey.slice(-4)}` : 'NOT_SET',
     activeModel,
     availableModels: [
+      'auto',
       'gemini-3.8-flash',
       'gemini-3.7-flash',
       'gemini-3.1-pro-preview'
@@ -383,7 +432,8 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
     const { GoogleGenAI } = await import('@google/genai');
     const customKey = storage.getCustomApiKey();
     const apiKey = (req.body?.apiKey || customKey || process.env.GEMINI_API_KEY || '').trim();
-    const model = (req.body?.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    let rawModel = (req.body?.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto').trim();
+    const testModel = rawModel === 'auto' ? 'gemini-3.8-flash' : rawModel;
 
     if (!apiKey) {
       res.status(400).json({ success: false, error: 'No Gemini API key available to test.' });
@@ -393,7 +443,7 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
     const ai = new GoogleGenAI({ apiKey });
     const startTime = Date.now();
     const testResponse = await ai.models.generateContent({
-      model,
+      model: testModel,
       contents: 'Respond with exactly: OK_AS_RADAR_X_ONLINE',
       config: { temperature: 0.1 }
     });
@@ -401,7 +451,7 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      model,
+      model: rawModel === 'auto' ? `auto (${testModel})` : testModel,
       durationMs,
       response: testResponse.text?.trim()
     });

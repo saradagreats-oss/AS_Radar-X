@@ -133,46 +133,55 @@ export interface ProductionSpec {
 
 export interface PhotoOpportunity {
   id: string;
-  title: string;
-  concept: string;
-  description: string;
-  why_selected: string;
-  market_evidence: string;
-  commercial_use: string;
-  visual_angle: string;
-  supply_gap: string;
-  longevity: string;
-  trend_dependence: string;
-  prompt: string;
-  tags: string[];
+  title: string; // Unified SEO-optimized Title merging main subject and visual context
+  prompt: string; // Top-level detailed prompt with texture, lighting, camera framing, visual style
+  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  description?: string;
+  concept?: string;
+  why_selected?: string;
+  market_evidence?: string;
+  commercial_use?: string;
+  visual_angle?: string;
+  supply_gap?: string;
+  longevity?: string;
+  trend_dependence?: string;
   production_spec?: ProductionSpec;
   differentiation_strategy?: string;
   buyer_use_case?: string;
   risk_notes?: string;
-  evidence: Record<string, any>;
+  evidence?: Record<string, any>;
 }
 
 export interface VideoOpportunity {
   id: string;
-  title: string;
-  concept: string;
-  description: string;
-  why_selected: string;
-  motion_value: string;
-  commercial_use: string;
-  motion_action: string;
-  duration: string;
-  loop_potential: string;
-  aspect_ratio: string;
-  supply_gap: string;
-  longevity: string;
-  prompt: string;
-  tags: string[];
+  title: string; // Unified SEO-optimized Title merging main subject and cinematic movement context
+  prompt: string; // Top-level detailed motion prompt with texture, camera motion, frame rate, lighting
+  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  description?: string;
+  concept?: string;
+  why_selected?: string;
+  motion_value?: string;
+  commercial_use?: string;
+  motion_action?: string;
+  duration?: string;
+  loop_potential?: string;
+  aspect_ratio?: string;
+  supply_gap?: string;
+  longevity?: string;
   production_spec?: ProductionSpec;
   differentiation_strategy?: string;
   buyer_use_case?: string;
   risk_notes?: string;
-  evidence: Record<string, any>;
+  evidence?: Record<string, any>;
+}
+
+export interface PdfDocumentConfig {
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  base64Data: string;
+  instructions: string;
+  uploadedAt: string;
 }
 
 export interface ResearchReport {
@@ -223,6 +232,7 @@ export type ResearchStage =
   | 'COMMERCIAL_USE'
   | 'LONGEVITY'
   | 'SCORING'
+  | 'PDF_ANALYSIS'
   | 'PREPARING_PHOTOS'
   | 'PREPARING_VIDEOS'
   | 'COMPLETE';
