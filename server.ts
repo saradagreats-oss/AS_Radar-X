@@ -83,6 +83,24 @@ app.get('/api/history', (_req: Request, res: Response) => {
   res.json({ history });
 });
 
+app.delete('/api/history', (_req: Request, res: Response) => {
+  try {
+    storage.clearAllHistory();
+    res.json({ success: true, message: 'All content history cleared successfully.', history: [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to clear history' });
+  }
+});
+
+app.post('/api/history/clear', (_req: Request, res: Response) => {
+  try {
+    storage.clearAllHistory();
+    res.json({ success: true, message: 'All content history cleared successfully.', history: [] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to clear history' });
+  }
+});
+
 // 5. Instructions
 app.get('/api/instruction', (_req: Request, res: Response) => {
   const instructions = storage.getInstructions();

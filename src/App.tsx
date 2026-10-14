@@ -182,6 +182,10 @@ export default function App() {
   // Copy feedback state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Clean All History state
+  const [isClearingHistory, setIsClearingHistory] = useState<boolean>(false);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -768,6 +772,27 @@ export default function App() {
       console.error('History load error:', err);
     } finally {
       setIsLoadingHistory(false);
+    }
+  };
+
+  // Clean All History
+  const handleCleanAllHistory = async () => {
+    setIsClearingHistory(true);
+    try {
+      const res = await fetch(getApiUrl('/api/history'), { method: 'DELETE' });
+      if (res.ok) {
+        setHistoryList([]);
+        setCurrentReport(null);
+        setShowClearHistoryConfirm(false);
+        showToast('All research history and content records have been cleared. Instructions preserved.');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+    } catch (err: any) {
+      showToast(`Failed to clean history: ${err.message}`);
+    } finally {
+      setIsClearingHistory(false);
     }
   };
 
@@ -2102,6 +2127,85 @@ export default function App() {
                   </button>
                 )}
               </div>
+            </div>
+
+            {/* CONTENT & RESEARCH HISTORY CLEANUP */}
+            <div className="bg-[var(--bg-card)] border border-red-500/30 rounded-lg p-5 shadow-lg space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[var(--border-subtle)] gap-2">
+                <div className="flex items-center gap-2">
+                  <i className="fa-solid fa-trash-can text-red-400 text-lg"></i>
+                  <div>
+                    <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)]">
+                      CONTENT &amp; RESEARCH HISTORY CLEANUP
+                    </h3>
+                    <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
+                      Clean all stored research reports, generated content opportunities, and discussion evidence
+                    </span>
+                  </div>
+                </div>
+
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.65rem] font-mono font-bold uppercase bg-red-500/10 text-red-400 border border-red-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                  {historyList.length} RECORD{historyList.length === 1 ? '' : 'S'} STORED
+                </span>
+              </div>
+
+              <div className="p-3 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)] font-mono text-xs text-[var(--text-dim)] leading-relaxed space-y-1.5">
+                <p>
+                  <strong className="text-[var(--text-main)]">Cleaned Data:</strong> All previous research history records, generated photo &amp; video opportunities, anti-duplication memory, and raw collected evidence.
+                </p>
+                <p className="text-emerald-400 flex items-center gap-1.5">
+                  <i className="fa-solid fa-shield-halved"></i>
+                  <span>
+                    <strong className="text-emerald-300">Untouched &amp; Preserved:</strong> All Analyst Instructions, Exclusion &amp; Rejection memory, PDF instructions, and System credentials stay 100% untouched.
+                  </span>
+                </p>
+              </div>
+
+              {!showClearHistoryConfirm ? (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowClearHistoryConfirm(true)}
+                    className="py-2.5 px-5 bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 hover:border-red-500 text-red-400 font-bold font-mono text-xs uppercase tracking-wider rounded transition flex items-center gap-2 shadow-sm"
+                  >
+                    <i className="fa-solid fa-trash-can"></i>
+                    <span>CLEAN ALL HISTORY</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="p-4 bg-red-500/10 border border-red-500/40 rounded-lg space-y-3 font-mono text-xs">
+                  <div className="flex items-start gap-2 text-red-300">
+                    <i className="fa-solid fa-triangle-exclamation text-amber-400 mt-0.5"></i>
+                    <div>
+                      <strong>Are you sure you want to clean all history?</strong>
+                      <div className="text-[0.68rem] text-[var(--text-muted)] mt-0.5">
+                        This action will permanently delete all completed research runs ({historyList.length} records) and generated opportunities. Instructions and system settings will NOT be touched.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleCleanAllHistory}
+                      disabled={isClearingHistory}
+                      className="py-2 px-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold font-mono text-xs uppercase tracking-wider rounded transition flex items-center gap-2 shadow"
+                    >
+                      <i className={`fa-solid ${isClearingHistory ? 'fa-spinner fa-spin' : 'fa-check'}`}></i>
+                      <span>{isClearingHistory ? 'CLEANING...' : 'YES, CLEAN ALL HISTORY'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowClearHistoryConfirm(false)}
+                      disabled={isClearingHistory}
+                      className="py-2 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--text-main)] font-mono text-xs rounded transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

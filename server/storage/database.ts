@@ -346,6 +346,30 @@ class StorageManager {
     return list;
   }
 
+  public clearAllHistory(): void {
+    this.memoryFallback.reports.clear();
+    this.memoryFallback.evidence.clear();
+
+    try {
+      const reportsFile = path.join(DATA_DIR, 'reports_fallback.json');
+      fs.writeFileSync(reportsFile, JSON.stringify([], null, 2), 'utf8');
+    } catch (e) {
+      console.error('Failed writing empty reports fallback file:', e);
+    }
+
+    if (this.db) {
+      try {
+        this.db.exec(`
+          DELETE FROM reports;
+          DELETE FROM evidence_store;
+          DELETE FROM opportunity_history;
+        `);
+      } catch (err) {
+        console.error('SQLite clearAllHistory error:', err);
+      }
+    }
+  }
+
   public saveRawEvidence(jobId: string, items: RawEvidence[]) {
     this.memoryFallback.evidence.set(jobId, items);
     if (!this.db || !items.length) return;
