@@ -36,7 +36,7 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
   // Navigation state
-  const [activeTab, setActiveTab] = useState<'research' | 'sources' | 'instructions' | 'history' | 'settings'>('research');
+  const [activeTab, setActiveTab] = useState<'research' | 'sources' | 'instructions' | 'history' | 'proxy' | 'settings'>('research');
 
   // Controls state
   const [photoCount, setPhotoCount] = useState<number>(5);
@@ -184,6 +184,19 @@ export default function App() {
   // Copy feedback state
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Desktop proxy and connectivity state
+  const [proxyConfig, setProxyConfig] = useState<{
+    enabled: boolean; protocol: 'http' | 'socks5'; host: string; port: number;
+    username: string; hasPassword: boolean;
+  }>({ enabled: false, protocol: 'http', host: '127.0.0.1', port: 10809, username: '', hasPassword: false });
+  const [proxyPasswordInput, setProxyPasswordInput] = useState<string>('');
+  const [isSavingProxy, setIsSavingProxy] = useState<boolean>(false);
+  const [isTestingProxy, setIsTestingProxy] = useState<boolean>(false);
+  const [proxyTestFeedback, setProxyTestFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  const [networkOnline, setNetworkOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
+  const [isHistoricalReport, setIsHistoricalReport] = useState<boolean>(false);
+  const priorCurrentReportRef = useRef<ResearchReport | null>(null);
+
   // Clean All History state
   const [isClearingHistory, setIsClearingHistory] = useState<boolean>(false);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
@@ -230,6 +243,7 @@ export default function App() {
     loadHistory();
     loadGeminiConfig();
     loadPdfConfig();
+    loadProxyConfig();
 
     // Check active job
     const storedJobId = localStorage.getItem('as_radar_x_active_job');
@@ -243,6 +257,16 @@ export default function App() {
       }
       pollJobStatus(storedJobId);
     }
+  }, []);
+
+  useEffect(() => {
+    const updateConnectivity = () => setNetworkOnline(navigator.onLine);
+    window.addEventListener('online', updateConnectivity);
+    window.addEventListener('offline', updateConnectivity);
+    return () => {
+      window.removeEventListener('online', updateConnectivity);
+      window.removeEventListener('offline', updateConnectivity);
+    };
   }, []);
 
   const toggleTheme = () => {
@@ -658,6 +682,89 @@ export default function App() {
     }
   };
 
+  // Proxy controls: the backend applies the proxy to outbound API and research traffic.
+  const loadProxyConfig = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/proxy/config'));
+      if (!res.ok) return;
+      const data = await res.json();
+      setProxyConfig({
+        enabled: !!data.enabled,
+        protocol: data.protocol === 'socks5' ? 'socks5' : 'http',
+        host: data.host || '127.0.0.1',
+        port: Number(data.port) || (data.protocol === 'socks5' ? 10808 : 10809),
+        username: data.username || '',
+        hasPassword: !!data.hasPassword
+      });
+    } catch {
+      // A proxy may be unavailable while the local engine is starting.
+    }
+  };
+
+  const handleToggleProxy = async () => {
+    const nextEnabled = !proxyConfig.enabled;
+    try {
+      const res = await fetch(getApiUrl('/api/proxy/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setProxyConfig((prev) => ({ ...prev, ...data.config }));
+      showToast(nextEnabled ? 'Proxy routing enabled for supported outbound requests.' : 'Proxy routing disabled.');
+      setProxyTestFeedback(null);
+    } catch (err: any) {
+      showToast(`Could not change proxy state: ${err.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleSaveProxyConfig = async () => {
+    setIsSavingProxy(true);
+    setProxyTestFeedback(null);
+    try {
+      const payload: any = { ...proxyConfig, port: Number(proxyConfig.port) };
+      if (proxyPasswordInput.trim()) payload.password = proxyPasswordInput;
+      const res = await fetch(getApiUrl('/api/proxy/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setProxyConfig((prev) => ({ ...prev, ...data.config }));
+      setProxyPasswordInput('');
+      showToast('Proxy settings saved on this device.');
+    } catch (err: any) {
+      showToast(`Proxy save failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsSavingProxy(false);
+    }
+  };
+
+  const handleTestProxy = async () => {
+    setIsTestingProxy(true);
+    setProxyTestFeedback(null);
+    try {
+      const payload: any = { ...proxyConfig, port: Number(proxyConfig.port) };
+      if (proxyPasswordInput.trim()) payload.password = proxyPasswordInput;
+      const res = await fetch(getApiUrl('/api/proxy/test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setProxyTestFeedback({ success: true, message: `Connection successful in ${data.latencyMs} ms (HTTP ${data.status}).` });
+      showToast('Proxy test succeeded.');
+    } catch (err: any) {
+      const message = err.message || 'Could not reach the internet through this proxy.';
+      setProxyTestFeedback({ success: false, message });
+    } finally {
+      setIsTestingProxy(false);
+    }
+  };
+
   // Gemini Config Handlers
   const loadGeminiConfig = async () => {
     try {
@@ -807,6 +914,8 @@ export default function App() {
       if (res.ok) {
         setHistoryList([]);
         setCurrentReport(null);
+        setIsHistoricalReport(false);
+        priorCurrentReportRef.current = null;
         setShowClearHistoryConfirm(false);
         showToast('All research history and content records have been cleared. Instructions preserved.');
       } else {
@@ -823,6 +932,8 @@ export default function App() {
   // Start Research
   const handleStartResearch = async () => {
     if (isResearching) return;
+    setIsHistoricalReport(false);
+    priorCurrentReportRef.current = null;
     if (photoCount === 0 && videoCount === 0) {
       showToast('Please select at least one photo or video opportunity.');
       return;
@@ -886,6 +997,10 @@ export default function App() {
         if (repRes.ok) {
           const reportData = await repRes.json();
           setCurrentReport(reportData);
+          setIsHistoricalReport(false);
+          priorCurrentReportRef.current = null;
+          showToast('Research completed successfully.');
+          try { if ('Notification' in window && Notification.permission === 'granted') new Notification('AS-Radar-X', { body: `Research completed: ${reportData.photos?.length || 0} photos and ${reportData.videos?.length || 0} videos.` }); } catch { /* Desktop notifications are optional. */ }
           if (reportData.source_status) {
             setSourcesStatus(reportData.source_status);
           }
@@ -921,7 +1036,10 @@ export default function App() {
       const res = await fetch(getApiUrl(`/api/report/${encodeURIComponent(jobId)}`));
       if (!res.ok) throw new Error(`Report HTTP ${res.status}`);
       const report = await res.json();
+      if (!isHistoricalReport) priorCurrentReportRef.current = currentReport;
       setCurrentReport(report);
+      setIsHistoricalReport(true);
+      setOpenEvidenceMap({});
       setActiveTab('research');
       showToast(`Loaded historical report from ${report.date || jobId}`);
     } catch (err: any) {
@@ -929,11 +1047,41 @@ export default function App() {
     }
   };
 
+  const buildReportCopyText = (report: ResearchReport) => {
+    const sections: string[] = [];
+    (report.photos || []).forEach((photo, index) => {
+      sections.push([
+        `Opportunity ${index + 1} photo`,
+        `Title - ${photo.title || ''}`,
+        `Prompt - ${photo.prompt || ''}`,
+        `Hashtag - ${Array.isArray(photo.tags) ? photo.tags.join(', ') : ''}`
+      ].join('\\n'));
+    });
+    (report.videos || []).forEach((video, index) => {
+      sections.push([
+        `Opportunity ${index + 1} video`,
+        `Title - ${video.title || ''}`,
+        `Prompt - ${video.prompt || ''}`,
+        `Hashtag - ${Array.isArray(video.tags) ? video.tags.join(', ') : ''}`
+      ].join('\\n'));
+    });
+    return sections.join('\\n\\n');
+  };
+
+  const handleBackFromHistoricalReport = () => {
+    setCurrentReport(priorCurrentReportRef.current);
+    priorCurrentReportRef.current = null;
+    setIsHistoricalReport(false);
+    setOpenEvidenceMap({});
+    setActiveTab('research');
+  };
+
   // Copy helper
   const copyToClipboard = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedKey(key);
+      if (key === 'report-all') showToast('Complete report copied to clipboard.');
       setTimeout(() => setCopiedKey(null), 1800);
     } catch {
       showToast('Copy failed.');
@@ -1034,6 +1182,20 @@ export default function App() {
               <span>GEMINI: {geminiConfig.hasKey ? 'ACTIVE' : 'NO KEY'}</span>
             </span>
 
+            <span className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${networkOnline ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-red-500/10 border-red-500/30 text-red-400'}`}>
+              <i className={`fa-solid ${networkOnline ? 'fa-wifi' : 'fa-wifi-slash'}`}></i>
+              <span>{networkOnline ? 'ONLINE' : 'OFFLINE'}</span>
+            </span>
+
+            <button
+              onClick={handleToggleProxy}
+              title="Toggle proxy routing for supported application requests"
+              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border transition text-[0.68rem] font-bold uppercase ${proxyConfig.enabled ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}
+            >
+              <i className={`fa-solid ${proxyConfig.enabled ? 'fa-shield-halved' : 'fa-shield'}`}></i>
+              <span>PROXY {proxyConfig.enabled ? 'ON' : 'OFF'}</span>
+            </button>
+
             {/* Theme Toggle */}
             <button
               onClick={toggleTheme}
@@ -1052,6 +1214,7 @@ export default function App() {
             { id: 'sources', label: 'HUMAN SOURCES', icon: 'fa-comments' },
             { id: 'instructions', label: 'INSTRUCTIONS & REJECTIONS', icon: 'fa-sliders' },
             { id: 'history', label: 'HISTORY', icon: 'fa-clock-rotate-left' },
+            { id: 'proxy', label: 'PROXY', icon: 'fa-shield-halved' },
             { id: 'settings', label: 'SYSTEM CONFIG', icon: 'fa-gear' }
           ].map((tab) => (
             <button
@@ -1243,13 +1406,32 @@ export default function App() {
                       </span>
                     </div>
 
-                    <button
-                      onClick={() => handleOpenJobEvidence(currentReport.job_id)}
-                      className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
-                    >
-                      <i className="fa-solid fa-database text-[var(--accent-amber)]"></i>
-                      <span>Inspect Raw SQLite Evidence</span>
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 justify-end">
+                      {isHistoricalReport && (
+                        <button
+                          onClick={handleBackFromHistoricalReport}
+                          className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
+                        >
+                          <i className="fa-solid fa-arrow-left text-[var(--accent-amber)]"></i>
+                          <span>Back to Research</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => copyToClipboard(buildReportCopyText(currentReport), 'report-all')}
+                        className="py-2 px-4 bg-rose-500 hover:bg-rose-400 text-white border border-rose-400 rounded font-mono text-xs font-bold uppercase flex items-center gap-2 shadow-md transition"
+                        title="Copy all photo and video titles, prompts, and tags in this report"
+                      >
+                        <i className={`fa-regular ${copiedKey === 'report-all' ? 'fa-check' : 'fa-copy'}`}></i>
+                        <span>{copiedKey === 'report-all' ? 'Copied All Report' : 'Copy All Report'}</span>
+                      </button>
+                      <button
+                        onClick={() => handleOpenJobEvidence(currentReport.job_id)}
+                        className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
+                      >
+                        <i className="fa-solid fa-database text-[var(--accent-amber)]"></i>
+                        <span>Inspect Raw SQLite Evidence</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Summary */}
@@ -1958,7 +2140,87 @@ export default function App() {
         )}
 
         {/* ========================================================
-             TAB 5: SYSTEM CONFIG
+             TAB 5: PROXY SETTINGS
+             ======================================================== */}
+        {activeTab === 'proxy' && (
+          <div className="space-y-6 max-w-4xl">
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+                <div>
+                  <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                    <i className="fa-solid fa-shield-halved text-[var(--accent-amber)]"></i>
+                    <span>V2Ray / Local Proxy Configuration</span>
+                  </h3>
+                  <p className="text-[0.68rem] text-[var(--text-dim)] font-mono mt-1">
+                    Route supported backend requests (Gemini, source collection and research) through your local V2Ray HTTP or SOCKS5 proxy.
+                  </p>
+                </div>
+                <button
+                  onClick={handleToggleProxy}
+                  className={`py-2 px-4 rounded font-mono text-xs font-bold uppercase border transition ${proxyConfig.enabled ? 'bg-emerald-500 text-black border-emerald-400' : 'bg-zinc-800 text-zinc-300 border-zinc-600'}`}
+                >
+                  <i className={`fa-solid ${proxyConfig.enabled ? 'fa-toggle-on' : 'fa-toggle-off'} mr-2`}></i>
+                  Proxy {proxyConfig.enabled ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.68rem] uppercase font-mono font-bold text-[var(--text-dim)] mb-1">Proxy protocol</label>
+                  <select
+                    value={proxyConfig.protocol}
+                    onChange={(e) => setProxyConfig((prev) => ({ ...prev, protocol: e.target.value as 'http' | 'socks5', port: e.target.value === 'socks5' ? 10808 : 10809 }))}
+                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)] outline-none"
+                  >
+                    <option value="http">HTTP / V2Ray mixed proxy</option>
+                    <option value="socks5">SOCKS5 (V2Ray)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[0.68rem] uppercase font-mono font-bold text-[var(--text-dim)] mb-1">Proxy host / IP</label>
+                  <input value={proxyConfig.host} onChange={(e) => setProxyConfig((prev) => ({ ...prev, host: e.target.value }))} placeholder="127.0.0.1" className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-[0.68rem] uppercase font-mono font-bold text-[var(--text-dim)] mb-1">Local proxy port</label>
+                  <input type="number" min={1} max={65535} value={proxyConfig.port} onChange={(e) => setProxyConfig((prev) => ({ ...prev, port: Number(e.target.value) }))} className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-[0.68rem] uppercase font-mono font-bold text-[var(--text-dim)] mb-1">Username (optional)</label>
+                  <input value={proxyConfig.username} onChange={(e) => setProxyConfig((prev) => ({ ...prev, username: e.target.value }))} placeholder="Proxy username" autoComplete="off" className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)] outline-none" />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-[0.68rem] uppercase font-mono font-bold text-[var(--text-dim)] mb-1">Password (optional)</label>
+                  <input type="password" value={proxyPasswordInput} onChange={(e) => setProxyPasswordInput(e.target.value)} placeholder={proxyConfig.hasPassword ? 'Saved password (leave blank to keep it)' : 'Proxy password'} autoComplete="new-password" className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)] outline-none" />
+                  <p className="text-[0.65rem] font-mono text-[var(--text-dim)] mt-1">
+                    {proxyConfig.hasPassword ? 'A proxy password is already saved locally. Leave blank to keep the saved password.' : 'Credentials are stored in the local app database.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button onClick={handleSaveProxyConfig} disabled={isSavingProxy} className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase rounded transition">
+                  <i className={`fa-solid ${isSavingProxy ? 'fa-spinner fa-spin' : 'fa-floppy-disk'} mr-1.5`}></i>Save Proxy Settings
+                </button>
+                <button onClick={handleTestProxy} disabled={isTestingProxy} className="py-2 px-4 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition">
+                  <i className={`fa-solid ${isTestingProxy ? 'fa-spinner fa-spin' : 'fa-plug'} mr-1.5`}></i>{isTestingProxy ? 'Testing...' : 'Test Connection'}
+                </button>
+              </div>
+
+              {proxyTestFeedback && (
+                <div className={`p-3 rounded border font-mono text-xs ${proxyTestFeedback.success ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-red-500/10 border-red-500/30 text-red-300'}`}>
+                  <i className={`fa-solid ${proxyTestFeedback.success ? 'fa-circle-check' : 'fa-triangle-exclamation'} mr-2`}></i>{proxyTestFeedback.message}
+                </div>
+              )}
+
+              <div className="p-3 rounded border border-[var(--border-subtle)] bg-[var(--bg-input)] text-[0.68rem] font-mono text-[var(--text-dim)] leading-relaxed">
+                Note: V2Ray clients commonly expose HTTP/mixed and SOCKS5 listeners on different local ports. Use the address and port shown in your V2Ray client; defaults here are examples and may differ on your computer. Turning this toggle off returns supported backend requests to a direct connection. It does not change Windows' global proxy setting.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================
+             TAB 6: SYSTEM CONFIG
              ======================================================== */}
         {activeTab === 'settings' && (
           <div className="space-y-6 max-w-4xl">
