@@ -1,0 +1,29 @@
+AS-RADAR-X — END USER LICENSE AGREEMENT
+
+Please read this agreement before installing or using AS-Radar-X.
+
+1. ACCEPTANCE
+By selecting the acceptance checkbox and continuing the installation, you agree to these terms. If you do not agree, cancel the installation.
+
+2. APPLICATION
+AS-Radar-X is a desktop research utility. It is provided on an “as available” basis. You are responsible for reviewing generated research and deciding whether it is suitable for your use.
+
+3. THIRD-PARTY SERVICES
+The application may connect to Google Gemini, Google Search, Reddit, Discord, stock-content websites, and user-configured proxy services. Those services have their own terms, availability rules, quotas, and charges. You are responsible for API keys, credentials, permissions, and usage costs associated with services you choose to connect.
+
+4. LOCAL DATA
+Application reports, preferences, proxy settings, prompts, and credentials may be stored on this computer in the application’s user-data directory. Protect your Windows account and this computer accordingly. Do not share API keys or bot tokens.
+
+5. NETWORK AND PROXY
+A proxy setting only routes supported application requests through the configured proxy. It does not guarantee anonymity, bypass a provider’s terms, or change any provider’s data limits.
+
+6. NO WARRANTY
+To the maximum extent allowed by applicable law, the application is provided without warranties of uninterrupted availability, fitness for a particular purpose, or accuracy of third-party data. Nothing in this agreement excludes rights that cannot lawfully be excluded.
+
+7. THIRD-PARTY COMPONENTS
+The application depends on open-source packages and third-party services that remain subject to their respective licenses and terms.
+
+8. CONTACT AND CHANGES
+Keep a copy of this agreement with your installation. Future versions may update these terms; the installer will show the terms supplied with that version.
+
+By continuing, you confirm that you have read and accepted this agreement.
