@@ -32,6 +32,10 @@ jobs:
       - name: Build and package Windows app
         run: npm run desktop:dist
 
+      - name: Smoke test packaged desktop app
+        shell: pwsh
+        run: ./scripts/windows-smoke-test.ps1
+
       - name: Report installer size
         shell: pwsh
         run: |
