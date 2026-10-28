@@ -23,7 +23,13 @@ function publishProxySettings(config = storage.getProxySettings()) {
   }
 }
 
-applyProxySettings(storage.getProxySettings());
+try {
+  applyProxySettings(storage.getProxySettings());
+} catch (err) {
+  console.error('Saved proxy settings could not be applied; starting with proxy disabled.', err);
+  storage.saveProxySettings({ enabled: false });
+  applyProxySettings(storage.getProxySettings());
+}
 publishProxySettings();
 
 app.use(express.json({ limit: '35mb' }));
@@ -421,8 +427,16 @@ app.get('/api/proxy/config', (_req: Request, res: Response) => {
 
 app.post('/api/proxy/config', (req: Request, res: Response) => {
   try {
-    const config = storage.saveProxySettings(req.body || {});
-    applyProxySettings(config);
+    const patch = req.body || {};
+    const current = storage.getProxySettings();
+    const candidate = {
+      ...current,
+      ...patch,
+      password: patch.password ? String(patch.password) : current.password
+    };
+    // Validate and apply before persisting so a typo cannot poison the next app startup.
+    applyProxySettings(candidate);
+    const config = storage.saveProxySettings(patch);
     publishProxySettings(config);
     const { password, ...safeConfig } = config;
     res.json({ success: true, config: { ...safeConfig, hasPassword: !!password } });
