@@ -473,7 +473,7 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
     let candidates: string[];
     if (rawModel.toLowerCase() === 'auto') {
       try { candidates = await listAvailableGeminiModels(apiKey); } catch { candidates = []; }
-      candidates = [...new Set([storage.getLastSuccessfulModel(), ...candidates, 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'].filter((model): model is string => !!model))];
+      candidates = [...new Set([storage.getLastSuccessfulModel(), ...candidates.slice(0, 12), 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'].filter((model): model is string => !!model))];
     } else {
       candidates = [rawModel.replace(/^models\//, '')];
     }
