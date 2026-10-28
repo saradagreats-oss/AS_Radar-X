@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { researchCoordinator } from './server/researcher.js';
 import { storage } from './server/storage/database.js';
+import { applyProxySettings, testProxyConnection } from './server/proxy.js';
 import { listAvailableGeminiModels } from './server/gemini/models.js';
 import { RedditCollector } from './server/collectors/reddit.js';
 import { DiscordCollector } from './server/collectors/discord.js';
@@ -14,7 +15,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.PORT !== undefined ? parseInt(process.env.PORT, 10) : 3000;
+
+applyProxySettings(storage.getProxySettings());
 
 app.use(express.json({ limit: '35mb' }));
 app.use(express.urlencoded({ extended: true, limit: '35mb' }));
@@ -402,6 +405,44 @@ app.get('/api/sources/probe', async (req: Request, res: Response) => {
   }
 });
 
+// Proxy settings (HTTP or V2Ray SOCKS5)
+app.get('/api/proxy/config', (_req: Request, res: Response) => {
+  const config = storage.getProxySettings();
+  const { password, ...safeConfig } = config;
+  res.json({ ...safeConfig, hasPassword: !!password });
+});
+
+app.post('/api/proxy/config', (req: Request, res: Response) => {
+  try {
+    const config = storage.saveProxySettings(req.body || {});
+    applyProxySettings(config);
+    const { password, ...safeConfig } = config;
+    res.json({ success: true, config: { ...safeConfig, hasPassword: !!password } });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message || 'Failed saving proxy settings.' });
+  }
+});
+
+app.post('/api/proxy/test', async (req: Request, res: Response) => {
+  try {
+    const current = storage.getProxySettings();
+    const candidate = {
+      ...current,
+      ...(req.body || {}),
+      password: req.body?.password ? String(req.body.password) : current.password
+    };
+    const result = await testProxyConnection(candidate);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(502).json({ success: false, error: err.message || 'Proxy connection test failed.' });
+  }
+});
+
+// Local backend health (used by the desktop launcher)
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ success: true, app: 'AS-Radar-X', online: true });
+});
+
 // 12. Gemini Model and API Key Configuration
 app.get('/api/gemini/config', (_req: Request, res: Response) => {
   const customKey = storage.getCustomApiKey();
@@ -527,8 +568,11 @@ async function startServer() {
     }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AS-Radar-X server running on http://0.0.0.0:${PORT}`);
+  const host = process.env.AS_RADAR_LOCAL_ONLY === 'true' ? '127.0.0.1' : '0.0.0.0';
+  const listener = app.listen(PORT, host, () => {
+    const address = listener.address();
+    const actualPort = typeof address === 'object' && address ? address.port : PORT;
+    console.log(`AS-Radar-X server running on http://${host}:${actualPort}`);
   });
 }
 
