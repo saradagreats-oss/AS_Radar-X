@@ -2,11 +2,60 @@
 
 const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const net = require('node:net');
 const path = require('node:path');
 
 let mainWindow = null;
 let backendProcess = null;
 let quitting = false;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
+function canBindPort(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+  });
+}
+
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+async function getStablePort() {
+  const filePath = path.join(app.getPath('userData'), 'desktop-server-port.json');
+  let savedPort = 0;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (Number.isInteger(parsed.port) && parsed.port >= 1024 && parsed.port <= 65535) savedPort = parsed.port;
+  } catch (_) { /* first launch */ }
+
+  let port = savedPort && await canBindPort(savedPort) ? savedPort : 0;
+  if (!port) port = await findFreePort();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ port }), 'utf8');
+  return port;
+}
 
 function stopBackend() {
   if (backendProcess && !backendProcess.killed) {
@@ -15,7 +64,8 @@ function stopBackend() {
   backendProcess = null;
 }
 
-function startBackend() {
+async function startBackend() {
+  const stablePort = await getStablePort();
   return new Promise((resolve, reject) => {
     const appRoot = app.getAppPath();
     const tsxCli = path.join(appRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
@@ -30,7 +80,7 @@ function startBackend() {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
         NODE_ENV: 'production',
-        PORT: '0',
+        PORT: String(stablePort),
         AS_RADAR_LOCAL_ONLY: 'true',
         AS_RADAR_DATA_DIR: dataDirectory
       }
@@ -111,6 +161,7 @@ function createWindow(port) {
 
 app.whenReady().then(async () => {
   try {
+    if (!hasSingleInstanceLock) return;
     const port = await startBackend();
     createWindow(port);
   } catch (error) {
