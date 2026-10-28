@@ -1055,7 +1055,7 @@ export default function App() {
         `Title - ${photo.title || ''}`,
         `Prompt - ${photo.prompt || ''}`,
         `Hashtag - ${Array.isArray(photo.tags) ? photo.tags.join(', ') : ''}`
-      ].join('\\n'));
+      ].join('\n'));
     });
     (report.videos || []).forEach((video, index) => {
       sections.push([
@@ -1063,9 +1063,9 @@ export default function App() {
         `Title - ${video.title || ''}`,
         `Prompt - ${video.prompt || ''}`,
         `Hashtag - ${Array.isArray(video.tags) ? video.tags.join(', ') : ''}`
-      ].join('\\n'));
+      ].join('\n'));
     });
-    return sections.join('\\n\\n');
+    return sections.join('\n\n');
   };
 
   const handleBackFromHistoricalReport = () => {
