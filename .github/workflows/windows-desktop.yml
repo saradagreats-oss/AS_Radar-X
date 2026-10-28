@@ -32,6 +32,16 @@ jobs:
       - name: Build and package Windows app
         run: npm run desktop:dist
 
+      - name: Report installer size
+        shell: pwsh
+        run: |
+          Get-ChildItem release/*.exe | ForEach-Object {
+            [PSCustomObject]@{
+              Installer = $_.Name
+              SizeMB = [math]::Round($_.Length / 1MB, 2)
+            }
+          } | Format-Table -AutoSize
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
