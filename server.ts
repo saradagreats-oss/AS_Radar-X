@@ -17,7 +17,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT !== undefined ? parseInt(process.env.PORT, 10) : 3000;
 
+function publishProxySettings(config = storage.getProxySettings()) {
+  if (typeof process.send === 'function') {
+    try { process.send({ type: 'as-radar-proxy-config', config }); } catch { /* no Electron parent in web deployment */ }
+  }
+}
+
 applyProxySettings(storage.getProxySettings());
+publishProxySettings();
 
 app.use(express.json({ limit: '35mb' }));
 app.use(express.urlencoded({ extended: true, limit: '35mb' }));
@@ -416,6 +423,7 @@ app.post('/api/proxy/config', (req: Request, res: Response) => {
   try {
     const config = storage.saveProxySettings(req.body || {});
     applyProxySettings(config);
+    publishProxySettings(config);
     const { password, ...safeConfig } = config;
     res.json({ success: true, config: { ...safeConfig, hasPassword: !!password } });
   } catch (err: any) {
