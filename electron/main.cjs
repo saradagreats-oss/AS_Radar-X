@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, session } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
@@ -9,6 +9,7 @@ const path = require('node:path');
 let mainWindow = null;
 let backendProcess = null;
 let quitting = false;
+let desktopProxyAuth = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -21,6 +22,28 @@ if (!hasSingleInstanceLock) {
     }
   });
 }
+
+async function applyChromiumProxy(config) {
+  desktopProxyAuth = config && config.enabled && config.username
+    ? { username: String(config.username), password: String(config.password || '') }
+    : null;
+  if (config && config.enabled && config.host && Number(config.port) > 0) {
+    const scheme = config.protocol === 'socks5' ? 'socks5' : 'http';
+    await session.defaultSession.setProxy({
+      proxyRules: `${scheme}://${config.host}:${Number(config.port)}`,
+      proxyBypassRules: '127.0.0.1;localhost;[::1]'
+    });
+  } else {
+    await session.defaultSession.setProxy({ mode: 'direct' });
+  }
+}
+
+app.on('login', (event, _webContents, _details, authInfo, callback) => {
+  if (authInfo && authInfo.isProxy && desktopProxyAuth) {
+    event.preventDefault();
+    callback(desktopProxyAuth.username, desktopProxyAuth.password);
+  }
+});
 
 function canBindPort(port) {
   return new Promise((resolve) => {
@@ -75,7 +98,7 @@ async function startBackend() {
     backendProcess = spawn(process.execPath, [tsxCli, serverEntry], {
       cwd: appRoot,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
@@ -88,6 +111,14 @@ async function startBackend() {
 
     let settled = false;
     let output = '';
+    let proxyApplyPromise = Promise.resolve();
+    backendProcess.on('message', (message) => {
+      if (message && message.type === 'as-radar-proxy-config') {
+        proxyApplyPromise = applyChromiumProxy(message.config).catch((error) => {
+          console.error('[AS-Radar-X proxy]', error);
+        });
+      }
+    });
     const timeout = setTimeout(() => {
       if (!settled) {
         settled = true;
@@ -103,7 +134,7 @@ async function startBackend() {
       if (match && !settled) {
         settled = true;
         clearTimeout(timeout);
-        resolve(Number(match[1]));
+        proxyApplyPromise.then(() => resolve(Number(match[1]))).catch(reject);
       }
     };
 
