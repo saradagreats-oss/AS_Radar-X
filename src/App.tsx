@@ -170,13 +170,15 @@ export default function App() {
     hasKey: false,
     activeKeyMasked: 'CHECKING...',
     activeModel: 'gemini-3.8-flash',
-    availableModels: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.1-pro-preview']
+    availableModels: ['auto']
   });
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>('');
-  const [selectedModelInput, setSelectedModelInput] = useState<string>('gemini-3.8-flash');
+  const [selectedModelInput, setSelectedModelInput] = useState<string>('auto');
   const [showApiKeyText, setShowApiKeyText] = useState<boolean>(false);
   const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
   const [isSavingGemini, setIsSavingGemini] = useState<boolean>(false);
+  const [isRefreshingGeminiModels, setIsRefreshingGeminiModels] = useState<boolean>(false);
+  const [lastSuccessfulGeminiModel, setLastSuccessfulGeminiModel] = useState<string>('');
   const [geminiTestFeedback, setGeminiTestFeedback] = useState<{ success: boolean; message: string; durationMs?: number } | null>(null);
 
   // Copy feedback state
@@ -663,12 +665,33 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setGeminiConfig(data);
+        if (data.lastSuccessfulModel) setLastSuccessfulGeminiModel(data.lastSuccessfulModel);
         if (data.activeModel) {
           setSelectedModelInput(data.activeModel);
         }
       }
     } catch {
       // ignore
+    }
+  };
+
+  const handleRefreshGeminiModels = async () => {
+    setIsRefreshingGeminiModels(true);
+    setGeminiTestFeedback(null);
+    try {
+      const body: any = {};
+      if (geminiApiKeyInput.trim()) body.apiKey = geminiApiKeyInput.trim();
+      const res = await fetch(getApiUrl('/api/gemini/models'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      const models = Array.isArray(data.models) ? data.models.filter((model: unknown) => typeof model === 'string') : [];
+      setGeminiConfig((prev) => ({ ...prev, availableModels: [...new Set(['auto', ...models])] }));
+      if (selectedModelInput !== 'auto' && !models.includes(selectedModelInput)) setSelectedModelInput('auto');
+      showToast(`Loaded ${models.length} Gemini models from Google.`);
+    } catch (err: any) {
+      showToast(`Model refresh failed: ${err.message || 'Google API request failed.'}`);
+    } finally {
+      setIsRefreshingGeminiModels(false);
     }
   };
 
@@ -721,6 +744,7 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        if (data.resolvedModel) setLastSuccessfulGeminiModel(data.resolvedModel);
         setGeminiTestFeedback({
           success: true,
           message: `Connected successfully! Model: ${data.model}, Latency: ${data.durationMs}ms`,
@@ -2059,19 +2083,19 @@ export default function App() {
               {/* Model Selector & Key Input */}
               <div className="space-y-3 font-mono text-xs">
                 <div>
-                  <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold mb-1">
-                    Select Gemini Model
-                  </label>
-                  <select
-                    value={selectedModelInput}
-                    onChange={(e) => setSelectedModelInput(e.target.value)}
-                    className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2 text-xs text-[var(--text-main)] outline-none"
-                  >
-                    <option value="auto">auto (Auto: Detect &amp; Optimize Best Active Model)</option>
-                    <option value="gemini-3.8-flash">gemini-3.8-flash (Latest: High-speed market synthesis)</option>
-                    <option value="gemini-3.7-flash">gemini-3.7-flash (Balanced speed &amp; strategic analysis)</option>
-                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Advanced complex reasoning)</option>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold">Select Gemini Model</label>
+                    <button type="button" onClick={handleRefreshGeminiModels} disabled={isRefreshingGeminiModels} className="py-1 px-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--accent-cyan)] disabled:opacity-50">
+                      <i className={`fa-solid ${isRefreshingGeminiModels ? 'fa-spinner fa-spin' : 'fa-rotate'} mr-1`}></i>
+                      {isRefreshingGeminiModels ? 'Refreshing...' : 'REFRESH MODELS'}
+                    </button>
+                  </div>
+                  <select value={selectedModelInput} onChange={(e) => setSelectedModelInput(e.target.value)} className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-2 text-xs text-[var(--text-main)] outline-none">
+                    {[...new Set(['auto', ...(geminiConfig.availableModels || []), selectedModelInput, geminiConfig.activeModel].filter((model): model is string => typeof model === 'string' && model.length > 0))].map((model) => (
+                      <option key={model} value={model}>{model === 'auto' ? (lastSuccessfulGeminiModel ? `Auto (last successful: ${lastSuccessfulGeminiModel})` : 'Auto (try available models until one works)') : model}</option>
+                    ))}
                   </select>
+                  <p className="mt-1 text-[0.65rem] text-[var(--text-dim)]">Refresh fetches models available for the current API key. Auto tries models until one works and prioritizes the last successful model in future research.</p>
                 </div>
 
                 <div>
