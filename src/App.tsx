@@ -170,10 +170,10 @@ export default function App() {
     hasKey: false,
     activeKeyMasked: 'CHECKING...',
     activeModel: 'gemini-3.8-flash',
-    availableModels: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.1-pro-preview']
+    availableModels: ['auto']
   });
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>('');
-  const [selectedModelInput, setSelectedModelInput] = useState<string>('gemini-3.8-flash');
+  const [selectedModelInput, setSelectedModelInput] = useState<string>('auto');
   const [showApiKeyText, setShowApiKeyText] = useState<boolean>(false);
   const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
   const [isSavingGemini, setIsSavingGemini] = useState<boolean>(false);
