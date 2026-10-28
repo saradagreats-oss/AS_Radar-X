@@ -599,6 +599,27 @@ class StorageManager {
     }
   }
 
+  public getLastSuccessfulModel(): string {
+    if (!this.db) return '';
+    try {
+      const row = this.db.prepare("SELECT value FROM user_settings WHERE key = 'last_successful_gemini_model'").get() as { value: string } | undefined;
+      return row?.value || '';
+    } catch (err) {
+      console.error('SQLite getLastSuccessfulModel error:', err);
+      return '';
+    }
+  }
+
+  public saveLastSuccessfulModel(model: string): void {
+    const value = (model || '').trim();
+    if (!value || !this.db) return;
+    try {
+      this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('last_successful_gemini_model', ?)").run(value);
+    } catch (err) {
+      console.error('SQLite saveLastSuccessfulModel error:', err);
+    }
+  }
+
   // Rejected Content
   public getRejectedContent(): string[] {
     if (this.db) {

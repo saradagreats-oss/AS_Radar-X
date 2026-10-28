@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { researchCoordinator } from './server/researcher.js';
 import { storage } from './server/storage/database.js';
+import { listAvailableGeminiModels } from './server/gemini/models.js';
 import { RedditCollector } from './server/collectors/reddit.js';
 import { DiscordCollector } from './server/collectors/discord.js';
 
@@ -414,13 +415,27 @@ app.get('/api/gemini/config', (_req: Request, res: Response) => {
     hasKey: !!activeKey,
     activeKeyMasked: activeKey ? `${activeKey.slice(0, 6)}...${activeKey.slice(-4)}` : 'NOT_SET',
     activeModel,
-    availableModels: [
-      'auto',
-      'gemini-3.8-flash',
-      'gemini-3.7-flash',
-      'gemini-3.1-pro-preview'
-    ]
+    availableModels: [...new Set(['auto', activeModel, storage.getLastSuccessfulModel()].filter(Boolean))],
+    lastSuccessfulModel: storage.getLastSuccessfulModel()
   });
+});
+
+app.post('/api/gemini/models', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.body?.apiKey || storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '').trim();
+    if (!apiKey) {
+      res.status(400).json({ success: false, error: 'Add a Gemini API key before refreshing the model list.' });
+      return;
+    }
+    const models = await listAvailableGeminiModels(apiKey);
+    if (!models.length) {
+      res.status(502).json({ success: false, error: 'Google returned no Gemini models supporting generateContent for this API key.' });
+      return;
+    }
+    res.json({ success: true, models });
+  } catch (err: any) {
+    res.status(502).json({ success: false, error: err.message || 'Unable to fetch Gemini models from Google.' });
+  }
 });
 
 app.post('/api/gemini/config', (req: Request, res: Response) => {
@@ -448,36 +463,46 @@ app.post('/api/gemini/config', (req: Request, res: Response) => {
 app.post('/api/gemini/test', async (req: Request, res: Response) => {
   try {
     const { GoogleGenAI } = await import('@google/genai');
-    const customKey = storage.getCustomApiKey();
-    const apiKey = (req.body?.apiKey || customKey || process.env.GEMINI_API_KEY || '').trim();
-    let rawModel = (req.body?.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto').trim();
-    const testModel = rawModel === 'auto' ? 'gemini-3.8-flash' : rawModel;
-
+    const apiKey = String(req.body?.apiKey || storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '').trim();
+    const rawModel = String(req.body?.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto').trim();
     if (!apiKey) {
       res.status(400).json({ success: false, error: 'No Gemini API key available to test.' });
       return;
     }
-
     const ai = new GoogleGenAI({ apiKey });
-    const startTime = Date.now();
-    const testResponse = await ai.models.generateContent({
-      model: testModel,
-      contents: 'Respond with exactly: OK_AS_RADAR_X_ONLINE',
-      config: { temperature: 0.1 }
-    });
-    const durationMs = Date.now() - startTime;
-
-    res.json({
-      success: true,
-      model: rawModel === 'auto' ? `auto (${testModel})` : testModel,
-      durationMs,
-      response: testResponse.text?.trim()
+    let candidates: string[];
+    if (rawModel.toLowerCase() === 'auto') {
+      try { candidates = await listAvailableGeminiModels(apiKey); } catch { candidates = []; }
+      candidates = [...new Set([storage.getLastSuccessfulModel(), ...candidates, 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'].filter((model): model is string => !!model))];
+    } else {
+      candidates = [rawModel.replace(/^models\//, '')];
+    }
+    const errors: string[] = [];
+    for (const testModel of candidates) {
+      const started = Date.now();
+      try {
+        const response = await ai.models.generateContent({
+          model: testModel,
+          contents: 'Respond with exactly: OK_AS_RADAR_X_ONLINE',
+          config: { temperature: 0.1 }
+        });
+        const durationMs = Date.now() - started;
+        storage.saveLastSuccessfulModel(testModel);
+        res.json({ success: true, model: rawModel.toLowerCase() === 'auto' ? `auto → ${testModel}` : testModel, resolvedModel: testModel, durationMs, response: response.text?.trim() });
+        return;
+      } catch (err: any) {
+        errors.push(`${testModel}: ${err.message || 'request failed'}`);
+        if (rawModel.toLowerCase() !== 'auto') break;
+      }
+    }
+    res.status(502).json({
+      success: false,
+      error: rawModel.toLowerCase() === 'auto'
+        ? `Auto could not find a working model. Tried ${errors.length} model(s). ${errors.slice(0, 3).join(' | ')}`
+        : errors[0] || 'Gemini connectivity test failed.'
     });
   } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      error: err.message || 'Gemini connectivity test failed.'
-    });
+    res.status(500).json({ success: false, error: err.message || 'Gemini connectivity test failed.' });
   }
 });
 

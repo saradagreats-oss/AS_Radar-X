@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { storage } from '../storage/database.js';
+import { listAvailableGeminiModels } from './models.js';
 import type {
   ClusterAnalysis,
   ConceptCluster,
@@ -73,25 +74,21 @@ function getClient() {
   return new GoogleGenAI({ apiKey });
 }
 
-function candidateModels(): string[] {
+async function candidateModels(): Promise<string[]> {
   const custom = storage.getCustomModel()?.trim();
   const preferred = process.env.GEMINI_MODEL?.trim();
-
-  // If user selected 'auto' or left empty, auto-detect best working model
-  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom : undefined;
-  const cleanPreferred = preferred && preferred.toLowerCase() !== 'auto' ? preferred : undefined;
-
-  return [
-    ...new Set(
-      [
-        cleanPreferred,
-        cleanCustom,
-        'gemini-3.8-flash',
-        'gemini-3.7-flash',
-        'gemini-2.0-flash'
-      ].filter(Boolean)
-    )
-  ] as string[];
+  const lastSuccessful = storage.getLastSuccessfulModel()?.trim();
+  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom.replace(/^models\//, '') : undefined;
+  const cleanPreferred = preferred && preferred.toLowerCase() !== 'auto' ? preferred.replace(/^models\//, '') : undefined;
+  let available: string[] = [];
+  try {
+    available = await listAvailableGeminiModels(storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '');
+  } catch {
+    // Keep the existing fallback list if live model discovery is temporarily unavailable.
+  }
+  const fallback = available.length ? available : ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'];
+  const preferredOrder = cleanCustom ? [cleanCustom, lastSuccessful, cleanPreferred] : [lastSuccessful, cleanPreferred];
+  return [...new Set([...preferredOrder, ...fallback].filter((model): model is string => !!model))];
 }
 
 function sourceStatusText(sourceStatuses: Record<string, string>): string {
@@ -305,7 +302,7 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
 
   let lastError: any = null;
 
-  for (const model of candidateModels()) {
+  for (const model of await candidateModels()) {
     try {
       const response = await ai.models.generateContent({
         model,
@@ -321,6 +318,7 @@ ${(input.rejectedContentList || []).join('\n') || 'None'}
       });
 
       const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
+      storage.saveLastSuccessfulModel(model);
 
       return {
         summary: parsed.summary || 'Web research completed.',
@@ -523,6 +521,7 @@ Return strictly valid JSON matching the schema.`;
         });
 
         const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+        storage.saveLastSuccessfulModel(model);
 
         // Process and validate Photos
         const processedPhotos: PhotoOpportunity[] = [];
