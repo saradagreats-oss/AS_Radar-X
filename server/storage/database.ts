@@ -10,8 +10,26 @@ import type {
   ResearchReport
 } from '../types.js';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DATA_DIR = path.resolve(process.env.AS_RADAR_DATA_DIR || path.resolve(process.cwd(), 'data'));
 const DB_PATH = path.join(DATA_DIR, 'as_radar_x.sqlite');
+
+export interface ProxySettings {
+  enabled: boolean;
+  protocol: 'http' | 'socks5';
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
+const DEFAULT_PROXY_SETTINGS: ProxySettings = {
+  enabled: false,
+  protocol: 'http',
+  host: '127.0.0.1',
+  port: 10809,
+  username: '',
+  password: ''
+};
 
 const DEFAULT_SUBREDDITS = [
   'StockPhotography',
@@ -60,6 +78,7 @@ class StorageManager {
     discordConfig: DiscordConfig;
     platformDataEnabled: boolean;
     pdfDocument: PdfDocumentConfig | null;
+    proxySettings: ProxySettings;
   } = {
     reports: new Map(),
     instructions: '',
@@ -68,7 +87,8 @@ class StorageManager {
     redditConfig: { ...DEFAULT_REDDIT_CONFIG },
     discordConfig: { ...DEFAULT_DISCORD_CONFIG },
     platformDataEnabled: true,
-    pdfDocument: null
+    pdfDocument: null,
+    proxySettings: { ...DEFAULT_PROXY_SETTINGS }
   };
 
   constructor() {
@@ -149,6 +169,7 @@ class StorageManager {
       this.memoryFallback.discordConfig = this.getDiscordConfig();
       this.memoryFallback.platformDataEnabled = this.getPlatformDataEnabled();
       this.memoryFallback.pdfDocument = this.getPdfDocument();
+      this.memoryFallback.proxySettings = this.getProxySettings();
     } catch (e) {
       // ignore
     }
@@ -174,6 +195,7 @@ class StorageManager {
         if (parsed.discordConfig) this.memoryFallback.discordConfig = { ...DEFAULT_DISCORD_CONFIG, ...parsed.discordConfig };
         if (typeof parsed.platformDataEnabled === 'boolean') this.memoryFallback.platformDataEnabled = parsed.platformDataEnabled;
         if (parsed.pdfDocument) this.memoryFallback.pdfDocument = parsed.pdfDocument;
+        if (parsed.proxySettings) this.memoryFallback.proxySettings = { ...DEFAULT_PROXY_SETTINGS, ...parsed.proxySettings };
       }
     } catch (e) {
       console.error('Error loading fallback storage files:', e);
@@ -199,7 +221,8 @@ class StorageManager {
             redditConfig: this.memoryFallback.redditConfig,
             discordConfig: this.memoryFallback.discordConfig,
             platformDataEnabled: this.memoryFallback.platformDataEnabled,
-            pdfDocument: this.memoryFallback.pdfDocument
+            pdfDocument: this.memoryFallback.pdfDocument,
+            proxySettings: this.memoryFallback.proxySettings
           },
           null,
           2
@@ -836,6 +859,45 @@ class StorageManager {
     current.connected = connected;
     this.saveDiscordConfig(current);
   }
+
+  // V2Ray / desktop proxy settings
+  public getProxySettings(): ProxySettings {
+    if (this.db) {
+      try {
+        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'proxy_settings'");
+        const row = stmt.get() as { value: string } | undefined;
+        if (row?.value) return { ...DEFAULT_PROXY_SETTINGS, ...JSON.parse(row.value) };
+      } catch (err) {
+        console.error('SQLite getProxySettings error:', err);
+      }
+    }
+    return { ...DEFAULT_PROXY_SETTINGS, ...(this.memoryFallback.proxySettings || {}) };
+  }
+
+  public saveProxySettings(patch: Partial<ProxySettings>): ProxySettings {
+    const current = this.getProxySettings();
+    const protocol = patch.protocol === 'socks5' ? 'socks5' : patch.protocol === 'http' ? 'http' : current.protocol;
+    const rawPort = patch.port === undefined ? current.port : Number(patch.port);
+    const updated: ProxySettings = {
+      enabled: patch.enabled !== undefined ? !!patch.enabled : current.enabled,
+      protocol,
+      host: patch.host !== undefined ? String(patch.host).trim() || current.host : current.host,
+      port: Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : current.port,
+      username: patch.username !== undefined ? String(patch.username).trim() : current.username,
+      password: patch.password !== undefined && String(patch.password).length > 0 ? String(patch.password) : current.password
+    };
+    this.memoryFallback.proxySettings = updated;
+    this.persistFallback();
+    if (this.db) {
+      try {
+        this.db.prepare("INSERT OR REPLACE INTO user_settings (key, value) VALUES ('proxy_settings', ?)").run(JSON.stringify(updated));
+      } catch (err) {
+        console.error('SQLite saveProxySettings error:', err);
+      }
+    }
+    return updated;
+  }
+
 }
 
 export const storage = new StorageManager();
