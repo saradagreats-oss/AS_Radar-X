@@ -86,7 +86,7 @@ async function candidateModels(): Promise<string[]> {
   } catch {
     // Keep the existing fallback list if live model discovery is temporarily unavailable.
   }
-  const fallback = available.length ? available : ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'];
+  const fallback = available.length ? available.slice(0, 12) : ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'];
   const preferredOrder = cleanCustom ? [cleanCustom, lastSuccessful, cleanPreferred] : [lastSuccessful, cleanPreferred];
   return [...new Set([...preferredOrder, ...fallback].filter((model): model is string => !!model))];
 }
