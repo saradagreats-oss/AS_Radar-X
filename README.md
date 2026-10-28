@@ -78,3 +78,18 @@ If evidence cannot support the requested number of opportunities, the report ret
 
 
 See `FINAL_AUDIT.md` for the final engineering/data-integrity audit performed on this package.
+
+## Windows desktop application
+
+The Windows installer is built by the **Windows desktop installer** GitHub Actions workflow on pull requests and updates to `main`. Its `AS-Radar-X-Windows-Installer` artifact contains a Windows x64 NSIS installer with an installation-location chooser, license acceptance, Start Menu shortcut, and optional desktop shortcut.
+
+To build locally on Windows with Node.js 22:
+```bash
+npm install
+npm run desktop:dist
+```
+The installer is written to `release/`. The desktop app launches the existing Express research engine locally and stores SQLite reports, history, settings, API configuration, saved PDF instructions, and proxy preferences in the Windows application user-data directory, so these are kept across app restarts and updates.
+
+The Proxy tab supports a local V2Ray HTTP/mixed proxy or SOCKS5 endpoint. Enter the address and port shown in your V2Ray client (common defaults are HTTP 10809 and SOCKS5 10808, but installations differ). The always-visible Proxy toggle controls supported backend requests; it does not change Windows-wide proxy settings.
+
+The desktop build is a network-connected app, not a fully offline AI model: Gemini and online source collection still require internet access and valid provider credentials/quotas.
