@@ -12,5 +12,5 @@ export async function listAvailableGeminiModels(apiKey: string): Promise<string[
     if (Array.isArray(supported) && !supported.some((method) => method.toLowerCase() === 'generatecontent')) continue;
     names.add(name);
   }
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return [...names].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
