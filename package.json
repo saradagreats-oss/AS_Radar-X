@@ -24,7 +24,7 @@
     "undici": "^7.16.0"
   },
   "devDependencies": {
-    "electron": "^39.0.0",
+    "electron": "^44.0.0",
     "electron-builder": "^26.0.12",
     "@types/archiver": "^8.0.0",
     "@types/express": "^4.17.21",
@@ -51,6 +51,7 @@
       "output": "release"
     },
     "files": [
+      "node_modules/**/*",
       "dist/**/*",
       "server/**/*",
       "server.ts",
