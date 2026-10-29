@@ -46,7 +46,7 @@
   "build": {
     "appId": "com.saradagreats.asradarx",
     "productName": "AS-Radar-X",
-    "asar": true,
+    "asar": false,
     "directories": {
       "output": "release"
     },
@@ -82,14 +82,6 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "license": "installer/LICENSE.txt"
-    },
-    "asarUnpack": [
-      "server/**/*",
-      "server.ts",
-      "dist/**/*",
-      "node_modules/tsx/**/*",
-      "node_modules/esbuild/**/*",
-      "node_modules/@esbuild/**/*"
-    ]
+    }
   }
 }
