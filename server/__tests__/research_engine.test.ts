@@ -91,7 +91,8 @@ async function runTests() {
   console.log('\\n--- TEST 6: Gemini model fallback regression ---');
   const analystSource = fs.readFileSync(new URL('../gemini/analyst.ts', import.meta.url), 'utf8');
   assert(
-    !/for\\s*\\(\\s*const\\s+\\w+\\s+of\\s+candidateModels\\s*\\(\\s*\\)\\s*\\)/.test(analystSource),
+    analystSource.includes('for (const model of await candidateModels())') &&
+      !analystSource.includes('for (const model of candidateModels())'),
     'Gemini model candidate selection awaits async discovery'
   );
 
