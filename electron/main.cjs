@@ -161,7 +161,7 @@ async function startBackend() {
   });
 }
 
-function createWindow(port) {
+function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
