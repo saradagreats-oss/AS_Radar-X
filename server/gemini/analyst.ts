@@ -506,7 +506,7 @@ Return strictly valid JSON matching the schema.`;
 
   let lastError: any = null;
 
-  for (const model of candidateModels()) {
+  for (const model of await candidateModels()) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await ai.models.generateContent({

@@ -161,12 +161,12 @@ async function startBackend() {
   });
 }
 
-function createWindow(port) {
+function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 940,
-    minWidth: 980,
-    minHeight: 680,
+    width: 1280,
+    height: 820,
+    minWidth: 720,
+    minHeight: 480,
     backgroundColor: '#0a0d14',
     title: 'AS-Radar-X',
     autoHideMenuBar: true,
@@ -186,15 +186,41 @@ function createWindow(port) {
     return { action: 'deny' };
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${port}`);
+  const splashHtml = `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>AS-Radar-X</title>
+      <style>
+        * { box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; margin: 0; }
+        body { display: grid; place-items: center; background: #0a0d14; color: #f0f4f8; font: 14px "Segoe UI", sans-serif; }
+        main { width: min(92vw, 440px); padding: 28px 24px; text-align: center; }
+        .icon { display: grid; place-items: center; width: 62px; height: 62px; margin: 0 auto 20px; border-radius: 15px; background: #542f19; color: #ffca42; font-size: 28px; font-weight: 800; }
+        h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 1px; }
+        p { color: #8a99ad; line-height: 1.55; }
+        .spinner { width: 24px; height: 24px; margin: 24px auto 0; border: 3px solid #232d3f; border-top-color: #ffb800; border-radius: 50%; animation: spin .8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+      </style>
+    </head>
+    <body>
+      <main><div class="icon">◎</div><h1>AS-RADAR-X</h1><p>Starting your local research engine…<br />Your saved reports and settings are kept on this device.</p><div class="spinner" role="progressbar" aria-label="Loading"></div></main>
+    </body>
+  </html>`;
+  mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(splashHtml));
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 app.whenReady().then(async () => {
   try {
     if (!hasSingleInstanceLock) return;
+    createWindow();
     const port = await startBackend();
-    createWindow(port);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+    }
   } catch (error) {
     console.error(error);
     dialog.showErrorBox(

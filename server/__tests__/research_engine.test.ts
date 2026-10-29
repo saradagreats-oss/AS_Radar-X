@@ -11,6 +11,7 @@ import { clusterEvidence } from '../normalization/clustering.js';
 import { calculateJaccardSimilarity, deduplicateEvidence } from '../normalization/dedupe.js';
 import { cleanText, extractTokens, normalizeEvidence } from '../normalization/textNormalizer.js';
 import { storage } from '../storage/database.js';
+import fs from 'node:fs';
 import type { RawEvidence } from '../types.js';
 
 let passed = 0;
@@ -87,7 +88,15 @@ async function runTests() {
   storage.deleteRejectedContent(0);
   assert(storage.getRejectedContent()[0] === 'ai plastic faces', 'rejection deletion persists');
 
-  console.log('\n--- TEST 6: Reddit & Discord Collectors ---');
+  console.log('\n--- TEST 6: Gemini model fallback regression ---');
+  const analystSource = fs.readFileSync(new URL('../gemini/analyst.ts', import.meta.url), 'utf8');
+  assert(
+    analystSource.includes('for (const model of await candidateModels())') &&
+      !analystSource.includes('for (const model of candidateModels())'),
+    'Gemini model candidate selection awaits async discovery'
+  );
+
+  console.log('\n--- TEST 7: Reddit & Discord Collectors ---');
   const redditCollector = new RedditCollector();
   const discordCollector = new DiscordCollector();
   assert(redditCollector.name === 'Reddit', 'Reddit collector initialized');
