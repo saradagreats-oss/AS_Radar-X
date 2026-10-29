@@ -28,11 +28,6 @@ try {
       if (Test-Path $candidate) { $portFile = $candidate; break }
     }
 
-    if (!$portFile) {
-      $portFile = Get-ChildItem -Path $env:APPDATA -Filter 'desktop-server-port.json' -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1 -ExpandProperty FullName
-    }
-
     if ($portFile -and (Test-Path $portFile)) {
       try {
         $saved = Get-Content $portFile -Raw | ConvertFrom-Json
@@ -50,6 +45,7 @@ try {
         # The HTTP listener may need another short moment after the port file is created.
       }
     }
+    if ($ready) { break }
     Start-Sleep -Milliseconds 500
   }
 
