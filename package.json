@@ -21,7 +21,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "tsx": "^4.21.0",
-    "undici": "^7.16.0"
+    "undici": "^7.28.0"
   },
   "devDependencies": {
     "electron": "^44.0.0",
