@@ -82,6 +82,14 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "license": "installer/LICENSE.txt"
-    }
+    },
+    "asarUnpack": [
+      "server/**/*",
+      "server.ts",
+      "dist/**/*",
+      "node_modules/tsx/**/*",
+      "node_modules/esbuild/**/*",
+      "node_modules/@esbuild/**/*"
+    ]
   }
 }
