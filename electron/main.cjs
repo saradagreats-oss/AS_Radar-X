@@ -96,7 +96,8 @@ async function startBackend() {
     const dataDirectory = path.join(app.getPath('userData'), 'data');
 
     backendProcess = spawn(process.execPath, [tsxCli, serverEntry], {
-      cwd: appRoot,
+      // app.getAppPath() is app.asar in packaged builds, not a real OS directory.
+      cwd: process.resourcesPath,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       env: {
