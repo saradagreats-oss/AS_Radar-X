@@ -90,9 +90,9 @@ function stopBackend() {
 async function startBackend() {
   const stablePort = await getStablePort();
   return new Promise((resolve, reject) => {
-    const appRoot = app.getAppPath();
-    const tsxCli = path.join(appRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-    const serverEntry = path.join(appRoot, 'server.ts');
+    const unpackedRoot = path.join(process.resourcesPath, 'app.asar.unpacked');
+    const tsxCli = path.join(unpackedRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    const serverEntry = path.join(unpackedRoot, 'server.ts');
     const dataDirectory = path.join(app.getPath('userData'), 'data');
 
     backendProcess = spawn(process.execPath, [tsxCli, serverEntry], {
