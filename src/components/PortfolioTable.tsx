@@ -42,7 +42,7 @@ export function PortfolioTable({ refreshKey }: PortfolioTableProps) {
         ].map(([label, value, color]) => (
           <div key={String(label)} className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
             <div className="text-[0.64rem] font-mono uppercase text-[var(--text-dim)]">{label}</div>
-            <div className={`text-xl font-bold mt-1 ${color}`}>{Number(value).toLocaleString()}</div>
+            <div className={`text-xl font-bold mt-1 ${color}`}>{value == null ? '—' : String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}</div>
           </div>
         ))}
       </div>
