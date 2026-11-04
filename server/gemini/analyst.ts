@@ -10,7 +10,6 @@ import type {
   ResearchReport,
   VideoOpportunity,
   WebResearchResult,
-  WebResearchSource,
   SourceEvidenceRecord
 } from '../types.js';
 import { calculateOpportunityScore } from '../analysis/evidenceScore.js';
@@ -37,31 +36,6 @@ interface AnalystInput {
   researchMemo?: string;
   evidenceSources?: SourceEvidenceRecord[];
   portfolioSummary?: Record<string, any> | null;
-}
-
-interface GroundedResearchInput {
-  clusters: ConceptCluster[];
-  rawEvidence: RawEvidence[];
-  sourceStatuses: Record<string, string>;
-  requestedPhotoCount: number;
-  requestedVideoCount: number;
-  userCustomInstructions?: string;
-  rejectedContentList?: string[];
-  researchTopics?: string[];
-  pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
-  isPlatformDataEnabled?: boolean;
-  pdfDoc?: PdfDocumentConfig | null;
-}
-
-interface GeminiWebResearchOutput {
-  summary: string;
-  findings: Array<{
-    topic: string;
-    observed_fact: string;
-    commercial_signal: string;
-    supply_or_differentiation_signal: string;
-    inference: string;
-  }>;
 }
 
 interface GeminiAnalystOutput {
@@ -98,32 +72,6 @@ async function candidateModels(): Promise<string[]> {
   return [...new Set([...preferredOrder, ...fallback].filter((model): model is string => !!model))];
 }
 
-function sourceStatusText(sourceStatuses: Record<string, string>): string {
-  return Object.entries(sourceStatuses)
-    .map(([source, status]) => `${source}: ${status}`)
-    .join('\n');
-}
-
-function extractGroundedSources(response: any): WebResearchSource[] {
-  const chunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const seen = new Set<string>();
-  const sources: WebResearchSource[] = [];
-
-  for (const chunk of chunks) {
-    const web = chunk?.web;
-    const url = web?.uri;
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    sources.push({
-      id: sources.length + 1,
-      title: String(web?.title || url),
-      url: String(url)
-    });
-  }
-
-  return sources;
-}
-
 /** Keep only relevant, distinct tags; never pad with unrelated generic stock terms. */
 function normalizeTags(rawTags: string[] = [], title = '', prompt = '', requestedCount = 25): string[] {
   const limit = Math.max(1, Math.min(50, Math.floor(requestedCount) || 25));
@@ -146,155 +94,6 @@ function normalizeTags(rawTags: string[] = [], title = '', prompt = '', requeste
     for (const token of extractTokens(title)) add(token);
   }
   return cleaned.slice(0, limit);
-}
-
-export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
-  const ai = getClient();
-  const pdfDoc = input.pdfDoc || storage.getPdfDocument();
-
-  const sourceHints =
-    input.isPlatformDataEnabled === false
-      ? []
-      : [
-          'site:reddit.com/r/StockPhotography',
-          'site:reddit.com/r/AdobeStock',
-          'site:reddit.com/r/graphic_design',
-          'site:reddit.com/r/VideoEditing',
-          'site:reddit.com/r/editors'
-        ];
-
-  const concepts = input.clusters.slice(0, 10).map((cluster) => ({
-    name: cluster.name,
-    keywords: cluster.primary_keywords,
-    sources: cluster.sources_observed,
-    evidence_count: cluster.evidence_count,
-    recurrence: cluster.recurrence_level
-  }));
-
-  const modeIsGeminiOnly = input.isPlatformDataEnabled === false;
-
-  const pdfContextText = pdfDoc?.base64Data
-    ? `\nATTACHED REFERENCE PDF DOCUMENT: "${pdfDoc.fileName}" (${Math.round(pdfDoc.fileSize / 1024)} KB)
-PDF DIRECTIVES & SPECIFIC INSTRUCTIONS FROM USER:
-${pdfDoc.instructions || 'Examine all visual pages, imagery, layouts, and data points inside this PDF document to extract actionable stock market gaps and creator visual needs.'}
-`
-    : '';
-
-  const promptText = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
-
-RESEARCH MODE:
-${modeIsGeminiOnly ? 'GEMINI-ONLY AUTONOMOUS RESEARCH' : 'PLATFORM DATA + GEMINI'}
-${pdfContextText}
-
-${
-  modeIsGeminiOnly
-    ? `AUTONOMY RULES FOR GEMINI-ONLY MODE:
-- Do NOT use or infer any predefined niche list, fixed industry list, or hardcoded research-question list.
-- Choose research queries and sources yourself from the user's explicit instructions, attached PDF document, and saved history.
-- Distinguish verified external web facts from inference.
-- Never invent fake download or sales counts, rankings, or percentages.`
-    : `PLATFORM-DATA MODE:
-- Use the collected Reddit/Discord evidence as the primary human-demand signal.
-- The optional community hints below are starting points, not proof of demand.
-- Distinguish observed statements from strategic inference.`
-}
-
-SOURCE STATUS:
-${sourceStatusText(input.sourceStatuses)}
-
-CURRENT DISCUSSION CLUSTERS:
-${JSON.stringify(concepts, null, 2)}
-
-RESEARCH TARGET TOPICS:
-${JSON.stringify(input.researchTopics || [], null, 2)}
-
-PAST OPPORTUNITY HISTORY (Exclusion Memory):
-${JSON.stringify((input.pastOpportunitiesHistory || []).slice(0, 30), null, 2)}
-
-USER INSTRUCTIONS:
-${input.userCustomInstructions || 'None'}
-
-USER REJECTIONS:
-${(input.rejectedContentList || []).join('\n') || 'None'}
-`;
-
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-      summary: { type: Type.STRING },
-      findings: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            topic: { type: Type.STRING },
-            observed_fact: { type: Type.STRING },
-            commercial_signal: { type: Type.STRING },
-            supply_or_differentiation_signal: { type: Type.STRING },
-            inference: { type: Type.STRING }
-          },
-          required: [
-            'topic',
-            'observed_fact',
-            'commercial_signal',
-            'supply_or_differentiation_signal',
-            'inference'
-          ]
-        }
-      }
-    },
-    required: ['summary', 'findings']
-  };
-
-  const contents: any[] = [];
-  if (pdfDoc?.base64Data) {
-    contents.push({
-      inlineData: {
-        mimeType: pdfDoc.mimeType || 'application/pdf',
-        data: pdfDoc.base64Data
-      }
-    });
-  }
-  contents.push({ text: promptText });
-
-  let lastError: any = null;
-
-  for (const model of await candidateModels()) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: 'application/json',
-          responseSchema,
-          systemInstruction: modeIsGeminiOnly
-            ? 'You are an autonomous, evidence-first market research analyst for AS-Radar-X. Follow user instructions, inspect any attached PDF document visual pages, and live web research to discover fresh creator demands. Do not invent fake statistics.'
-            : 'You are the market research analyst for AS-Radar-X. Use human discussion evidence, attached PDF guidelines, and web research to uncover commercial stock opportunities.'
-        }
-      });
-
-      const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
-      storage.saveLastSuccessfulModel(model);
-
-      return {
-        summary: parsed.summary || 'Web research completed.',
-        findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 12) : [],
-        sources: extractGroundedSources(response),
-        search_queries: response?.candidates?.[0]?.groundingMetadata?.webSearchQueries || []
-      };
-    } catch (err: any) {
-      lastError = err;
-    }
-  }
-
-  // Graceful fallback if web research search tool is unavailable
-  return {
-    summary: 'Autonomous strategic market research conducted using user guidance and directive memory.',
-    findings: [],
-    sources: [],
-    search_queries: []
-  };
 }
 
 export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
