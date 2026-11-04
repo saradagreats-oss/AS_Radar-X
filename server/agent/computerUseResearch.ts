@@ -10,6 +10,8 @@ const root = path.resolve(process.env.AS_RADAR_DATA_DIR || path.resolve(process.
 const eventsDir = path.join(root, 'research-events');
 const shotsDir = path.join(root, 'research-screenshots');
 const pending = new Map<string, () => void>();
+const GEMINI_REQUEST_TIMEOUT_MS = 60_000;
+const GEMINI_HEARTBEAT_INTERVAL_MS = 10_000;
 
 function log(jobId: string, type: string, message: string, details: Record<string, any> = {}, url = '') {
   const event = { id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type, message, details, url };
@@ -70,6 +72,32 @@ function handoff(jobId: string, message: string, url: string, onHandoff?: (messa
   return new Promise<void>(resolve => pending.set(jobId, () => { onResume?.(); resolve(); }));
 }
 
+async function awaitUserHandoff(
+  jobId: string,
+  message: string,
+  url: string,
+  input: { onHandoff?: (message: string) => void; onResume?: () => void }
+): Promise<any> {
+  await browserBridge.show();
+  await browserBridge.setTakeover(true);
+  try {
+    await handoff(jobId, message, url, input.onHandoff, input.onResume);
+  } finally {
+    await browserBridge.setTakeover(false).catch(() => undefined);
+  }
+
+  const capture = await browserBridge.capture();
+  const screenshot = saveScreenshot(jobId, capture.screenshotBase64);
+  inspectPortfolio(jobId, capture);
+  log(jobId, 'browser_preview', 'The user handoff is complete. Gemini has the browser back.', {
+    screenshot,
+    pageTitle: capture.snapshot.title,
+    userHandoffCompleted: true
+  }, capture.snapshot.url);
+  await browserBridge.hide();
+  return capture;
+}
+
 function getText(interaction: any) {
   return (interaction?.steps || []).filter((s: any) => s.type === 'model_output').flatMap((s: any) => s.content || []).filter((c: any) => c.type === 'text').map((c: any) => c.text || '').join('\n');
 }
@@ -93,7 +121,7 @@ function actionSafety(call: any) {
 function isRetryableGeminiError(error: any): boolean {
   const message = String(error?.message || error || '');
   const status = String(error?.status || error?.code || '');
-  return /\b(429|500|502|503|504)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|high demand|temporarily unavailable|overloaded/i.test(status + ' ' + message);
+  return /\b(429|500|502|503|504)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|high demand|temporarily unavailable|overloaded|timed? ?out|timeout/i.test(status + ' ' + message);
 }
 
 function isUnavailableModelError(error: any): boolean {
@@ -106,20 +134,82 @@ function waitForRetry(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createInteractionWithRetry(ai: any, request: any, model: string, jobId: string): Promise<any> {
+async function createInteractionAttempt(
+  ai: any,
+  request: any,
+  model: string,
+  jobId: string,
+  phase: 'initial' | 'follow-up',
+  onProgress?: (stage: string, progress: number, message: string) => void
+): Promise<any> {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const phaseLabel = phase === 'initial' ? 'first research request' : 'research follow-up';
+  log(jobId, 'gemini_request_started', `Sending Gemini the ${phaseLabel} using ${model}.`, { model, phase, timeoutMs: GEMINI_REQUEST_TIMEOUT_MS });
+
+  const heartbeat = setInterval(() => {
+    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    log(jobId, 'gemini_wait', `Gemini is still processing the ${phaseLabel} (${elapsedSeconds}s).`, { model, phase, elapsedSeconds });
+    if (phase === 'initial') {
+      onProgress?.('PLANNING', Math.min(15, 9 + Math.floor(elapsedSeconds / 15)), `Waiting for Gemini's first response · ${elapsedSeconds}s · ${model}`);
+    } else {
+      onProgress?.('BROWSER_RESEARCH', 12, `Gemini is processing the next research step · ${elapsedSeconds}s`);
+    }
+  }, GEMINI_HEARTBEAT_INTERVAL_MS);
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const apiRequest = ai.interactions.create(request, {
+      timeout_ms: GEMINI_REQUEST_TIMEOUT_MS,
+      signal: controller.signal
+    });
+    const timeoutRequest = new Promise((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Gemini Computer Use ${phaseLabel} timed out after ${Math.round(GEMINI_REQUEST_TIMEOUT_MS / 1000)} seconds. Check the API key, quota and network, then retry.`));
+      }, GEMINI_REQUEST_TIMEOUT_MS);
+    });
+    const response = await Promise.race([apiRequest, timeoutRequest]);
+    log(jobId, 'gemini_request_completed', `Gemini completed the ${phaseLabel}.`, {
+      model,
+      phase,
+      durationMs: Date.now() - startedAt
+    });
+    return response;
+  } catch (error: any) {
+    log(jobId, 'gemini_request_error', `Gemini's ${phaseLabel} did not complete successfully.`, {
+      model,
+      phase,
+      durationMs: Date.now() - startedAt,
+      error: String(error?.message || error)
+    });
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    clearInterval(heartbeat);
+  }
+}
+
+async function createInteractionWithRetry(
+  ai: any,
+  request: any,
+  model: string,
+  jobId: string,
+  onProgress?: (stage: string, progress: number, message: string) => void
+): Promise<any> {
   let lastError: any;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await ai.interactions.create(request);
+      return await createInteractionAttempt(ai, request, model, jobId, 'follow-up', onProgress);
     } catch (error: any) {
       lastError = error;
-      if (!isRetryableGeminiError(error) || attempt === 2) break;
-      log(jobId, 'gemini_retry', `Gemini Computer Use follow-up request for ${model} returned a temporary error; retry ${attempt + 1}/2.`, {
+      if (!isRetryableGeminiError(error) || attempt === 1) break;
+      log(jobId, 'gemini_retry', `Gemini Computer Use follow-up request for ${model} returned a temporary error; retry 1/1.`, {
         model,
         attempt: attempt + 1,
         error: String(error?.message || error)
       });
-      await waitForRetry(2000 * (attempt + 1));
+      await waitForRetry(2000);
     }
   }
   throw new Error(`Gemini Computer Use follow-up request failed on "${model}" after retries: ${String(lastError?.message || lastError)}`);
@@ -157,6 +247,11 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   let screenshots = 0;
   const firstShot = saveScreenshot(input.jobId, capture.screenshotBase64); if (firstShot) screenshots++;
   inspectPortfolio(input.jobId, capture);
+  log(input.jobId, 'browser_preview', 'Adobe Contributor start page captured.', {
+    screenshot: firstShot,
+    pageTitle: capture.snapshot.title,
+    initialCapture: true
+  }, capture.snapshot.url);
   const tool: any[] = [{ type: 'computer_use', environment: 'browser', enable_prompt_injection_detection: true }];
   const prompt = [
     'You are AS-Radar-X senior stock-media market research director. Work autonomously, but do not expose private chain-of-thought. Give short visible action intents and evidence-based conclusions.',
@@ -183,13 +278,17 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   ].join('\n');
   log(input.jobId, 'model_selection', `Gemini model preference: ${modelPreference}.`, { selectedModel: modelPreference, candidates: modelCandidates });
 
-  input.onProgress?.('PLANNING', 8, 'Gemini is reviewing the portfolio and planning its research.');
+  input.onProgress?.('PLANNING', 9, 'Sending Gemini its first marketplace research request.');
   if (isVerification(capture.snapshot)) {
-    await browserBridge.setTakeover(true);
-    await handoff(input.jobId, 'Please sign in or complete the human verification manually in the visible browser, then press Continue.', capture.snapshot.url, input.onHandoff, input.onResume);
-    await browserBridge.setTakeover(false);
-    capture = await browserBridge.capture();
-    inspectPortfolio(input.jobId, capture);
+    capture = await awaitUserHandoff(
+      input.jobId,
+      'Please sign in or complete the human verification manually in the visible browser, then press Continue.',
+      capture.snapshot.url,
+      input
+    );
+  } else {
+    // Hide the live browser during autonomous work. The panel shows saved snapshots instead.
+    await browserBridge.hide();
   }
   const initialInput = [
     { type: 'text', text: prompt + '\nVISIBLE START PAGE:\n' + capture.snapshot.text.slice(0, 14000) },
@@ -201,11 +300,18 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     let tryNextModel = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        interaction = await ai.interactions.create({
-          model: candidateModel,
-          input: initialInput,
-          tools: tool
-        });
+        interaction = await createInteractionAttempt(
+          ai,
+          {
+            model: candidateModel,
+            input: initialInput,
+            tools: tool
+          },
+          candidateModel,
+          input.jobId,
+          'initial',
+          input.onProgress
+        );
         model = candidateModel;
         storage.saveLastSuccessfulModel(model);
         log(input.jobId, 'agent_started', `Gemini Computer Use agent started with ${model}.`, {
@@ -270,17 +376,21 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       if (safety.includes('blocked')) throw new Error(`Gemini safety system blocked browser action: ${call.name}.`);
       let safetyAcknowledgement = false;
       if (safety.includes('require_confirmation')) {
-        await browserBridge.setTakeover(true);
-        await handoff(input.jobId, `Gemini requests your confirmation: ${intent}`, capture.snapshot.url, input.onHandoff, input.onResume);
-        await browserBridge.setTakeover(false);
+        capture = await awaitUserHandoff(
+          input.jobId,
+          `Gemini requests your confirmation: ${intent}`,
+          capture.snapshot.url,
+          input
+        );
         safetyAcknowledgement = true;
       }
       if (isVerification(capture.snapshot)) {
-        await browserBridge.setTakeover(true);
-        await handoff(input.jobId, 'Please sign in or complete human verification manually in the visible browser, then press Continue.', capture.snapshot.url, input.onHandoff, input.onResume);
-        await browserBridge.setTakeover(false);
-        capture = await browserBridge.capture();
-        inspectPortfolio(input.jobId, capture);
+        capture = await awaitUserHandoff(
+          input.jobId,
+          'Please sign in or complete the human verification manually in the visible browser, then press Continue.',
+          capture.snapshot.url,
+          input
+        );
         results.push({ skipped: true, reason: 'The user completed sign-in or human verification. Re-evaluate the current page and choose a fresh action.' });
         continue;
       }
@@ -317,11 +427,12 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       log(input.jobId, 'browser_action', `${call.name}: ${intent}`, { action: call.name, result, screenshot: screenshotPath, pageTitle: capture.snapshot.title }, capture.snapshot.url);
       input.onProgress?.('BROWSER_RESEARCH', Math.min(78, 12 + Math.round((turn / maxTurns) * 65)), `Researching ${capture.snapshot.title || capture.snapshot.url} · ${pages} pages · ${actions} actions`);
       if (isVerification(capture.snapshot)) {
-        await browserBridge.setTakeover(true);
-        await handoff(input.jobId, 'A sign-in or verification page appeared. Complete it manually, then press Continue.', capture.snapshot.url, input.onHandoff, input.onResume);
-        await browserBridge.setTakeover(false);
-        capture = await browserBridge.capture();
-        inspectPortfolio(input.jobId, capture);
+        capture = await awaitUserHandoff(
+          input.jobId,
+          'A sign-in or verification page appeared. Complete it manually, then press Continue.',
+          capture.snapshot.url,
+          input
+        );
       }
     }
     const functionResults = calls.map((call: any, index: number) => ({ type: 'function_result', name: call.name, call_id: call.id || call.call_id, result: [{ type: 'text', text: JSON.stringify({ ...results[index], url: capture.snapshot.url, title: capture.snapshot.title, visibleText: capture.snapshot.text.slice(0, 15000), headings: capture.snapshot.headings.slice(0, 30), links: capture.snapshot.links.slice(0, 80), images: capture.snapshot.images.slice(0, 50), tables: capture.snapshot.tables.slice(0, 20), portfolioRows: capture.snapshot.portfolioRows?.slice(0, 100) || [] }) }, ...(capture.screenshotBase64 ? [{ type: 'image', data: capture.screenshotBase64, mime_type: capture.screenshotMimeType || 'image/jpeg' }] : [])] }));
@@ -329,7 +440,8 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       ai,
       { model, previous_interaction_id: interaction.id, input: functionResults, tools: tool },
       model,
-      input.jobId
+      input.jobId,
+      input.onProgress
     );
     if (consecutiveNoNewPages >= 8 && turn > 15) log(input.jobId, 'coverage_note', 'Gemini has revisited pages without discovering new URLs; it may choose to expand to new sources or conclude coverage.', { turn, pages, actions }, capture.snapshot.url);
   }
