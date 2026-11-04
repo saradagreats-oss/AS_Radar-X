@@ -10,8 +10,10 @@ import type {
   ResearchReport,
   VideoOpportunity,
   WebResearchResult,
-  WebResearchSource
+  WebResearchSource,
+  SourceEvidenceRecord
 } from '../types.js';
+import { calculateOpportunityScore } from '../analysis/evidenceScore.js';
 import { evaluateRiskAndRejections } from '../analysis/riskFilter.js';
 import { checkHistoryProtection } from '../analysis/historyProtection.js';
 import { calculateJaccardSimilarity } from '../normalization/dedupe.js';
@@ -30,6 +32,11 @@ interface AnalystInput {
   webResearch?: WebResearchResult;
   isPlatformDataEnabled?: boolean;
   pdfDoc?: PdfDocumentConfig | null;
+  tagCount?: number;
+  titleInstructions?: string;
+  researchMemo?: string;
+  evidenceSources?: SourceEvidenceRecord[];
+  portfolioSummary?: Record<string, any> | null;
 }
 
 interface GroundedResearchInput {
@@ -117,78 +124,28 @@ function extractGroundedSources(response: any): WebResearchSource[] {
   return sources;
 }
 
-/**
- * Normalizes tags so that exactly 25 clean, deduplicated keywords are returned,
- * ensuring the first 10 tags are the highest-relevance SEO tags.
- */
-function normalizeTags25(rawTags: string[] = [], title: string = '', prompt: string = ''): string[] {
+/** Keep only relevant, distinct tags; never pad with unrelated generic stock terms. */
+function normalizeTags(rawTags: string[] = [], title = '', prompt = '', requestedCount = 25): string[] {
+  const limit = Math.max(1, Math.min(50, Math.floor(requestedCount) || 25));
   const cleaned: string[] = [];
   const seen = new Set<string>();
-
-  for (const t of rawTags) {
-    const norm = String(t || '')
+  const add = (value: unknown) => {
+    const norm = String(value || '')
       .replace(/^[#\d.-]+/, '')
       .replace(/[^a-zA-Z0-9\s-]/g, ' ')
+      .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase();
-    if (norm && norm.length >= 2 && !seen.has(norm)) {
+    if (norm && norm.length >= 2 && !seen.has(norm) && cleaned.length < limit) {
       seen.add(norm);
       cleaned.push(norm);
     }
-    if (cleaned.length === 25) break;
+  };
+  for (const tag of rawTags) add(tag);
+  if (cleaned.length < limit) {
+    for (const token of extractTokens(title)) add(token);
   }
-
-  // If fewer than 25, extract meaningful terms from title and prompt
-  if (cleaned.length < 25) {
-    const tokens = extractTokens(`${title} ${prompt}`);
-    for (const token of tokens) {
-      const norm = token.toLowerCase();
-      if (norm.length >= 3 && !seen.has(norm)) {
-        seen.add(norm);
-        cleaned.push(norm);
-      }
-      if (cleaned.length === 25) break;
-    }
-  }
-
-  // Fallback high-commercial general stock terms if still under 25
-  const fallbackCommercial = [
-    'commercial photography',
-    'authentic concept',
-    'high resolution',
-    'copy space',
-    'modern visual',
-    'commercial b-roll',
-    'creative content',
-    'visual storytelling',
-    'contemporary style',
-    'professional quality',
-    'natural lighting',
-    'editorial footage',
-    'commercial marketing',
-    'digital asset',
-    'studio quality',
-    'clean composition',
-    'no people',
-    'tactile texture',
-    'organic tone',
-    'high production',
-    'industry standard',
-    'cinematic quality',
-    'commercial licensing',
-    'content creator',
-    'stock library'
-  ];
-
-  for (const fb of fallbackCommercial) {
-    if (cleaned.length >= 25) break;
-    if (!seen.has(fb)) {
-      seen.add(fb);
-      cleaned.push(fb);
-    }
-  }
-
-  return cleaned.slice(0, 25);
+  return cleaned.slice(0, limit);
 }
 
 export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
@@ -352,6 +309,11 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
     : '';
 
   const evidencePayload = {
+    research_memo: input.researchMemo || '',
+    evidence_sources: input.evidenceSources || input.webResearch?.sources || [],
+    portfolio_snapshot: input.portfolioSummary || null,
+    requested_tag_count: Math.max(1, Math.min(50, Number(input.tagCount) || 25)),
+    title_instructions: input.titleInstructions || '',
     is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
     source_statuses: input.sourceStatuses,
     deterministic_analysis: input.clusterAnalyses.map((a) => ({
@@ -385,14 +347,14 @@ CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
    - STRICT CONSTRAINT 1: Do NOT clearly or directly show any human faces. Keep subjects faceless, in silhouette, from behind, over-the-shoulder, or focused on hands, tools, and environments.
    - STRICT CONSTRAINT 2: Absolutely NO text, words, signs, watermarks, or typography inside the visual content.
 
-3. EXACTLY 25 TAGS PER OPPORTUNITY:
-   - Every opportunity MUST contain EXACTLY 25 tags in its 'tags' array.
-   - The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized primary search keywords for this asset.
-   - Tags 11 to 25 provide broad commercial use cases, buyer industries, and atmospheric keywords.
+3. USER-SELECTED TAG COUNT:
+   - Return up to ${input.tagCount || 25} accurate, distinct and relevant tags.
+   - The first 10 (or all if fewer) must be the strongest, most specific search terms.
+   - Never pad with generic phrases, unrelated industries or repeated synonyms.
 
-4. EXACT OPPORTUNITY COUNT:
-   - You MUST generate exactly ${input.requestedPhotoCount} photos and exactly ${input.requestedVideoCount} videos.
-   - Strictly honor this quantity.
+4. EVIDENCE-BASED OPPORTUNITY COUNT:
+   - Requested quantities are maximums. Return fewer when evidence is insufficient or candidates are repetitive.
+   - Never invent a candidate merely to meet the count.
 
 5. ZERO SIMILARITY & HISTORICAL DEDUPLICATION:
    - No opportunities within the report may be similar to one another. Each must cover a distinct commercial niche or visual angle.
@@ -404,8 +366,18 @@ CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
 
 ${pdfContextText}
 
+TITLE STYLE INSTRUCTIONS:
+${input.titleInstructions?.trim() || 'No title style override. Infer natural title length, word order, vocabulary and punctuation from relevant stock marketplace listing titles observed during this run. Keep titles readable, specific and searchable; never keyword-stuff.'}
+
 USER CUSTOM INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
+
+RESEARCH MEMO AND OBSERVED SOURCE RECORDS:
+${(input.researchMemo || '').slice(0, 30000)}
+${JSON.stringify(input.evidenceSources || input.webResearch?.sources || [], null, 2)}
+
+LIVE PORTFOLIO SNAPSHOT:
+${JSON.stringify(input.portfolioSummary || null, null, 2)}
 
 USER REJECTION LIST (Strict Anti-Cliché / Exclusions):
 ${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
@@ -425,6 +397,36 @@ ${JSON.stringify(evidencePayload, null, 2)}
 
 Return strictly valid JSON matching the schema.`;
 
+  const scoreComponentSchema = {
+    type: Type.OBJECT,
+    properties: {
+      score: { type: Type.NUMBER, description: 'Evidence-based assessment from 0 to 100, not a sales probability.' },
+      reason: { type: Type.STRING, description: 'Short rationale tied to exact source evidence IDs; state evidence limitations.' },
+      evidence_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } }
+    },
+    required: ['score', 'reason', 'evidence_ids']
+  };
+  const scoreComponentsSchema = {
+    type: Type.OBJECT,
+    properties: {
+      recurring_demand: scoreComponentSchema,
+      commercial_use: scoreComponentSchema,
+      marketplace_evidence: scoreComponentSchema,
+      supply_gap: scoreComponentSchema,
+      longevity: scoreComponentSchema,
+      production_feasibility: scoreComponentSchema
+    },
+    required: ['recurring_demand','commercial_use','marketplace_evidence','supply_gap','longevity','production_feasibility']
+  };
+  const evidenceSchema = {
+    type: Type.OBJECT,
+    properties: {
+      observed_facts: { type: Type.ARRAY, items: { type: Type.STRING } },
+      inferences: { type: Type.ARRAY, items: { type: Type.STRING } },
+      source_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } }
+    },
+    required: ['observed_facts','inferences','source_ids']
+  };
   const photoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
@@ -439,14 +441,19 @@ Return strictly valid JSON matching the schema.`;
         description:
           'Top-level detailed AI image prompt specifying subject, fine surface texture details, lighting, environment, camera lens, color palette, realism constraints. No human faces directly shown, no text in image.'
       },
-      tags: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
-        description:
-          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
-      }
+      tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
+      concept: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      visual_angle: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
+      evidence: evidenceSchema,
+      score_components: scoreComponentsSchema
     },
-    required: ['id', 'title', 'prompt', 'tags']
+    required: ['id','title','prompt','tags','concept','why_selected','commercial_use','buyer_use_case','visual_angle','supply_gap','longevity','evidence','score_components']
   };
 
   const videoOpportunitySchema = {
@@ -463,14 +470,21 @@ Return strictly valid JSON matching the schema.`;
         description:
           'Top-level detailed AI video prompt specifying cinematic camera movement, choreography, fine texture details, lighting, camera lens, color palette, stabilization. No human faces directly shown, no text in video.'
       },
-      tags: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
-        description:
-          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
-      }
+      tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
+      concept: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      motion_value: { type: Type.STRING },
+      motion_action: { type: Type.STRING },
+      loop_potential: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
+      evidence: evidenceSchema,
+      score_components: scoreComponentsSchema
     },
-    required: ['id', 'title', 'prompt', 'tags']
+    required: ['id','title','prompt','tags','concept','why_selected','commercial_use','buyer_use_case','motion_value','supply_gap','longevity','evidence','score_components']
   };
 
   const responseSchema = {
@@ -554,16 +568,17 @@ Return strictly valid JSON matching the schema.`;
             continue;
           }
 
-          const tags25 = normalizeTags25(rawP.tags, cleanTitle, rawP.prompt);
+          const tags = normalizeTags(rawP.tags, cleanTitle, rawP.prompt, input.tagCount || 25);
+          const score = calculateOpportunityScore(rawP.score_components);
 
           processedPhotos.push({
             id: rawP.id || `photo-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
             prompt: rawP.prompt || '',
-            tags: tags25
+            tags
           });
 
-          if (processedPhotos.length === input.requestedPhotoCount) break;
+          if (processedPhotos.length >= input.requestedPhotoCount) break;
         }
 
         // Process and validate Videos
@@ -597,7 +612,8 @@ Return strictly valid JSON matching the schema.`;
             continue;
           }
 
-          const tags25 = normalizeTags25(rawV.tags, cleanTitle, rawV.prompt);
+          const tags = normalizeTags(rawV.tags, cleanTitle, rawV.prompt, input.tagCount || 25);
+          const score = calculateOpportunityScore(rawV.score_components);
 
           processedVideos.push({
             id: rawV.id || `video-${Date.now()}-${idx + 1}`,
@@ -606,7 +622,7 @@ Return strictly valid JSON matching the schema.`;
             tags: tags25
           });
 
-          if (processedVideos.length === input.requestedVideoCount) break;
+          if (processedVideos.length >= input.requestedVideoCount) break;
         }
 
         return {
