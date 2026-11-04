@@ -93,7 +93,7 @@ app.get('/api/research/status/:jobId', (req: Request, res: Response) => {
   });
 });
 
-// Autonomous research audit trail and portfolio cache.
+// Autonomous public-market research audit trail.
 app.get('/api/research/events/:jobId', (req: Request, res: Response) => {
   const after = Math.max(0, Number(req.query.after) || 0);
   res.json({ job_id: req.params.jobId, events: storage.getResearchEvents(req.params.jobId, after) });
