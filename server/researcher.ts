@@ -292,7 +292,8 @@ class ResearchCoordinator {
         researchMemo,
         evidenceSources,
         portfolioSummary,
-        model: agentResult?.model || storage.getCustomModel()
+        model: agentResult?.model || storage.getCustomModel(),
+        allowModelFallback: String(storage.getCustomModel() || '').toLowerCase() === 'auto'
       });
 
       const photos = analystOutput.photos || [];
