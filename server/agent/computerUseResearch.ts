@@ -109,7 +109,7 @@ function isVerification(snapshot: any) {
   const text = String(snapshot?.text || '');
   let url = '';
   try { url = new URL(String(snapshot?.url || '')).hostname.toLowerCase(); } catch { /* no URL */ }
-  const adobeAuthHost = /(^|\\.)((account|auth)\.adobe\.com|adobeid[^.]*\.services\.adobe\.com)$/.test(url);
+  const adobeAuthHost = /(^|\.)((account|auth)\.adobe\.com|adobeid[^.]*\.services\.adobe\.com)$/.test(url);
   const authCopy = /sign in to adobe|sign in to continue|enter your password|email address to continue|two.step verification|verify your identity/i.test(text);
   return !!snapshot?.verificationHint || snapshot?.passwordFieldCount > 0 || (adobeAuthHost && authCopy);
 }
