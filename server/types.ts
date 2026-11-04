@@ -205,15 +205,6 @@ export interface VideoOpportunity {
   score?: OpportunityScore;
 }
 
-export interface PdfDocumentConfig {
-  fileName: string;
-  fileSize: number;
-  mimeType: string;
-  base64Data: string;
-  instructions: string;
-  uploadedAt: string;
-}
-
 export interface ResearchReport {
   id: string;
   job_id: string;
