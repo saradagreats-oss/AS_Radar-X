@@ -32,6 +32,7 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
     window.addEventListener('resize', syncBounds);
     window.addEventListener('scroll', syncBounds, true);
     const timer = window.setInterval(syncBounds, 700);
+    window.asRadarDesktop.showBrowser().catch(() => undefined);
     window.asRadarDesktop.browserStatus().then(setBrowserStatus).catch(() => undefined);
     return () => {
       observer?.disconnect();
