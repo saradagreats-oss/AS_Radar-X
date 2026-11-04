@@ -570,8 +570,6 @@ Return strictly valid JSON matching the schema.`;
           }
 
           const tags = normalizeTags(rawP.tags, cleanTitle, rawP.prompt, input.tagCount || 25);
-          const score = calculateOpportunityScore(rawP.score_components);
-
           const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
           const score = calculateOpportunityScore(rawP.score_components, validIds);
           const sourceIds = Array.isArray(rawP.evidence?.source_ids) ? rawP.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
