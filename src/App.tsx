@@ -1159,6 +1159,39 @@ export default function App() {
                     {currentReport.evidence_summary}
                   </p>
 
+                  {currentReport.score_summary && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+                      <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Average priority</div><div className="text-xl font-black text-[var(--accent-amber)]">{currentReport.score_summary.average}/100</div></div>
+                      <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Highest score</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.score_summary.highest}/100</div></div>
+                      <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Scored opportunities</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.score_summary.scored}</div></div>
+                      <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Normalized pages</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.analysis_stats?.deduplicated_evidence_count ?? currentReport.browser_research?.pages ?? 0}</div></div>
+                    </div>
+                  )}
+                  {currentReport.portfolio_summary && (
+                    <div className="flex flex-wrap gap-2 mb-4 text-[0.68rem] font-mono">
+                      <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">Portfolio rows {currentReport.portfolio_summary.rowCount}</span>
+                      {currentReport.portfolio_summary.accepted != null && <span className="px-2 py-1 bg-emerald-500/10 text-emerald-300 rounded">Accepted {currentReport.portfolio_summary.accepted}</span>}
+                      {currentReport.portfolio_summary.rejected != null && <span className="px-2 py-1 bg-rose-500/10 text-rose-300 rounded">Rejected {currentReport.portfolio_summary.rejected}</span>}
+                      {currentReport.portfolio_summary.pending != null && <span className="px-2 py-1 bg-amber-500/10 text-amber-200 rounded">In review {currentReport.portfolio_summary.pending}</span>}
+                      {currentReport.portfolio_summary.totalDownloads != null && <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">Downloads {currentReport.portfolio_summary.totalDownloads}</span>}
+                      {currentReport.portfolio_summary.changedAssets != null && <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">{currentReport.portfolio_summary.changedAssets} asset changes</span>}
+                    </div>
+                  )}
+                  {currentReport.browser_research && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-4 text-[0.65rem] font-mono text-[var(--text-dim)]">
+                      <span>Browser: {currentReport.browser_research.pages} pages · {currentReport.browser_research.actions} actions · {currentReport.browser_research.screenshots} screenshots</span>
+                      <button onClick={() => { setShowBrowser(true); setActiveTab('research'); }} className="text-[var(--accent-amber)] hover:underline">Reopen research browser & captures</button>
+                    </div>
+                  )}
+                  {currentReport.evidence_sources && currentReport.evidence_sources.length > 0 && (
+                    <details className="mb-4">
+                      <summary className="cursor-pointer text-[0.68rem] font-mono text-[var(--text-muted)]">INSPECT {currentReport.evidence_sources.length} RESEARCH SOURCES</summary>
+                      <div className="mt-2 p-3 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)] space-y-1.5 max-h-64 overflow-y-auto">
+                        {currentReport.evidence_sources.map(source => <a key={source.id} href={source.url} target="_blank" rel="noreferrer" className="block text-[0.68rem] text-[var(--accent-amber)] hover:underline break-all">[{source.id}] {source.title} · {source.url}</a>)}
+                      </div>
+                    </details>
+                  )}
+
                   {/* Warnings */}
                   {currentReport.warnings && currentReport.warnings.length > 0 && (
                     <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded font-mono text-xs text-amber-200/90 space-y-1">
