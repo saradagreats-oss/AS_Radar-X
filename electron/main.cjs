@@ -101,17 +101,19 @@ async function executeBrowserAction(action, args = {}) {
       return { url: wc.getURL(), title: wc.getTitle() };
     }
     case 'click': {
-      const size = wc.getSize();
-      const x = Math.max(0, Math.min(size[0] - 1, Math.round((Number(args.x)||0) * size[0] / 1000)));
-      const y = Math.max(0, Math.min(size[1] - 1, Math.round((Number(args.y)||0) * size[1] / 1000)));
+      const bounds = researchBrowser.getBounds();
+      const x = Math.max(0, Math.min(bounds.width - 1, Math.round((Number(args.x)||0) * bounds.width / 1000)));
+      const y = Math.max(0, Math.min(bounds.height - 1, Math.round((Number(args.y)||0) * bounds.height / 1000)));
+      if (action === 'move') { wc.sendInputEvent({ type: 'mouseMove', x, y }); return { moved: true, x, y }; }
+      const clickCount = Math.max(1, Math.min(3, Number(args.clickCount) || 1));
       wc.sendInputEvent({ type: 'mouseMove', x, y });
-      wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-      wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-      return { clicked: true, x, y };
+      wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount });
+      wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount });
+      return { clicked: true, x, y, clickCount };
     }
     case 'scroll': {
-      const size = wc.getSize();
-      const x = Math.max(0, Math.min(size[0] - 1, Math.round((Number(args.x)||500) * size[0] / 1000))), y = Math.max(0, Math.min(size[1] - 1, Math.round((Number(args.y)||500) * size[1] / 1000)));
+      const bounds = researchBrowser.getBounds();
+      const x = Math.max(0, Math.min(bounds.width - 1, Math.round((Number(args.x)||500) * bounds.width / 1000))), y = Math.max(0, Math.min(bounds.height - 1, Math.round((Number(args.y)||500) * bounds.height / 1000)));
       wc.sendInputEvent({ type: 'mouseMove', x, y });
       wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: Number(args.deltaX)||0, deltaY: Math.max(-3000, Math.min(3000, Number(args.deltaY)||600)) });
       return { scrolled: true };
