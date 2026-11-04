@@ -3,11 +3,9 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
-  DiscordConfig,
   HistoryRecord,
   PdfDocumentConfig,
   RawEvidence,
-  RedditConfig,
   ResearchReport
 } from '../types.js';
 
@@ -32,42 +30,6 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   password: ''
 };
 
-const DEFAULT_SUBREDDITS = [
-  'StockPhotography',
-  'AdobeStock',
-  'Shutterstock',
-  'graphic_design',
-  'VideoEditing',
-  'editors',
-  'Midjourney',
-  'blender',
-  'vfx'
-];
-
-const DEFAULT_REDDIT_CONFIG: RedditConfig = {
-  clientId: '',
-  clientSecret: '',
-  userAgent: 'AS-Radar-X/2.0 (by /u/saradagreats)',
-  subreddits: [...DEFAULT_SUBREDDITS],
-  timeframe: '24h',
-  collectPosts: true,
-  collectComments: true,
-  connected: false,
-  lastCollectedAt: undefined,
-  collectedCount: 0
-};
-
-const DEFAULT_DISCORD_CONFIG: DiscordConfig = {
-  botToken: '',
-  guilds: [],
-  timeframe: '24h',
-  collectMessages: true,
-  collectThreads: true,
-  connected: false,
-  lastCollectedAt: undefined,
-  collectedCount: 0
-};
-
 class StorageManager {
   private db: DatabaseSync | null = null;
   private memoryFallback: {
@@ -75,9 +37,6 @@ class StorageManager {
     instructions: string;
     rejectedContent: string[];
     evidence: Map<string, RawEvidence[]>;
-    redditConfig: RedditConfig;
-    discordConfig: DiscordConfig;
-    platformDataEnabled: boolean;
     pdfDocument: PdfDocumentConfig | null;
     proxySettings: ProxySettings;
   } = {
@@ -85,9 +44,6 @@ class StorageManager {
     instructions: '',
     rejectedContent: [],
     evidence: new Map(),
-    redditConfig: { ...DEFAULT_REDDIT_CONFIG },
-    discordConfig: { ...DEFAULT_DISCORD_CONFIG },
-    platformDataEnabled: true,
     pdfDocument: null,
     proxySettings: { ...DEFAULT_PROXY_SETTINGS }
   };
@@ -214,9 +170,6 @@ class StorageManager {
     try {
       this.memoryFallback.instructions = this.getInstructions();
       this.memoryFallback.rejectedContent = this.getRejectedContent();
-      this.memoryFallback.redditConfig = this.getRedditConfig();
-      this.memoryFallback.discordConfig = this.getDiscordConfig();
-      this.memoryFallback.platformDataEnabled = this.getPlatformDataEnabled();
       this.memoryFallback.pdfDocument = this.getPdfDocument();
       this.memoryFallback.proxySettings = this.getProxySettings();
     } catch (e) {
@@ -240,9 +193,6 @@ class StorageManager {
         const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
         this.memoryFallback.instructions = parsed.instructions || '';
         this.memoryFallback.rejectedContent = parsed.rejectedContent || [];
-        if (parsed.redditConfig) this.memoryFallback.redditConfig = { ...DEFAULT_REDDIT_CONFIG, ...parsed.redditConfig };
-        if (parsed.discordConfig) this.memoryFallback.discordConfig = { ...DEFAULT_DISCORD_CONFIG, ...parsed.discordConfig };
-        if (typeof parsed.platformDataEnabled === 'boolean') this.memoryFallback.platformDataEnabled = parsed.platformDataEnabled;
         if (parsed.pdfDocument) this.memoryFallback.pdfDocument = parsed.pdfDocument;
         if (parsed.proxySettings) this.memoryFallback.proxySettings = { ...DEFAULT_PROXY_SETTINGS, ...parsed.proxySettings };
       }
@@ -267,9 +217,6 @@ class StorageManager {
           {
             instructions: this.memoryFallback.instructions,
             rejectedContent: this.memoryFallback.rejectedContent,
-            redditConfig: this.memoryFallback.redditConfig,
-            discordConfig: this.memoryFallback.discordConfig,
-            platformDataEnabled: this.memoryFallback.platformDataEnabled,
             pdfDocument: this.memoryFallback.pdfDocument,
             proxySettings: this.memoryFallback.proxySettings
           },
@@ -851,182 +798,6 @@ class StorageManager {
       list.splice(index, 1);
       this.saveRejectedContent(list);
     }
-  }
-
-  // Platform Data Toggle
-  public getPlatformDataEnabled(): boolean {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'platform_data_enabled'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value !== undefined) {
-          return row.value === 'true' || row.value === '1';
-        }
-      } catch (err) {
-        console.error('SQLite getPlatformDataEnabled error:', err);
-      }
-    }
-    return this.memoryFallback.platformDataEnabled ?? true;
-  }
-
-  public savePlatformDataEnabled(enabled: boolean): void {
-    this.memoryFallback.platformDataEnabled = !!enabled;
-    this.persistFallback();
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('platform_data_enabled', ?)
-        `);
-        stmt.run(enabled ? 'true' : 'false');
-      } catch (err) {
-        console.error('SQLite savePlatformDataEnabled error:', err);
-      }
-    }
-  }
-
-  // Reddit Configuration
-  public getRedditConfig(): RedditConfig {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'reddit_config'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value) {
-          const parsed = JSON.parse(row.value);
-          return {
-            ...DEFAULT_REDDIT_CONFIG,
-            ...parsed,
-            subreddits: Array.isArray(parsed.subreddits) && parsed.subreddits.length > 0 ? parsed.subreddits : [...DEFAULT_SUBREDDITS]
-          };
-        }
-      } catch (err) {
-        console.error('SQLite getRedditConfig error:', err);
-      }
-    }
-    return this.memoryFallback.redditConfig || { ...DEFAULT_REDDIT_CONFIG };
-  }
-
-  public getMaskedRedditConfig(): RedditConfig {
-    const config = this.getRedditConfig();
-    return {
-      ...config,
-      clientSecret: config.clientSecret ? '••••••••' : ''
-    };
-  }
-
-  public saveRedditConfig(patch: Partial<RedditConfig>): RedditConfig {
-    const current = this.getRedditConfig();
-    const isMaskedSecret = patch.clientSecret && (patch.clientSecret === '••••••••' || patch.clientSecret.includes('••'));
-
-    const updated: RedditConfig = {
-      ...current,
-      clientId: patch.clientId !== undefined ? patch.clientId.trim() : current.clientId,
-      clientSecret: isMaskedSecret ? current.clientSecret : (patch.clientSecret !== undefined ? patch.clientSecret.trim() : current.clientSecret),
-      userAgent: patch.userAgent !== undefined ? patch.userAgent.trim() || DEFAULT_REDDIT_CONFIG.userAgent : current.userAgent,
-      subreddits: Array.isArray(patch.subreddits) ? patch.subreddits.map((s) => s.replace(/^r\//i, '').trim()).filter(Boolean) : current.subreddits,
-      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
-      collectPosts: patch.collectPosts !== undefined ? !!patch.collectPosts : current.collectPosts,
-      collectComments: patch.collectComments !== undefined ? !!patch.collectComments : current.collectComments,
-      connected: patch.connected !== undefined ? patch.connected : current.connected,
-      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
-      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
-    };
-
-    this.memoryFallback.redditConfig = updated;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('reddit_config', ?)
-        `);
-        stmt.run(JSON.stringify(updated));
-      } catch (err) {
-        console.error('SQLite saveRedditConfig error:', err);
-      }
-    }
-
-    return updated;
-  }
-
-  public updateRedditStats(collectedCount: number, connected: boolean = true): void {
-    const current = this.getRedditConfig();
-    current.lastCollectedAt = new Date().toISOString();
-    current.collectedCount = (current.collectedCount || 0) + collectedCount;
-    current.connected = connected;
-    this.saveRedditConfig(current);
-  }
-
-  // Discord Configuration
-  public getDiscordConfig(): DiscordConfig {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'discord_config'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value) {
-          const parsed = JSON.parse(row.value);
-          return {
-            ...DEFAULT_DISCORD_CONFIG,
-            ...parsed,
-            guilds: Array.isArray(parsed.guilds) ? parsed.guilds : []
-          };
-        }
-      } catch (err) {
-        console.error('SQLite getDiscordConfig error:', err);
-      }
-    }
-    return this.memoryFallback.discordConfig || { ...DEFAULT_DISCORD_CONFIG };
-  }
-
-  public getMaskedDiscordConfig(): DiscordConfig {
-    const config = this.getDiscordConfig();
-    return {
-      ...config,
-      botToken: config.botToken ? '••••••••' : ''
-    };
-  }
-
-  public saveDiscordConfig(patch: Partial<DiscordConfig>): DiscordConfig {
-    const current = this.getDiscordConfig();
-    const isMaskedToken = patch.botToken && (patch.botToken === '••••••••' || patch.botToken.includes('••'));
-
-    const updated: DiscordConfig = {
-      ...current,
-      botToken: isMaskedToken ? current.botToken : (patch.botToken !== undefined ? patch.botToken.trim() : current.botToken),
-      guilds: Array.isArray(patch.guilds) ? patch.guilds : current.guilds,
-      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
-      collectMessages: patch.collectMessages !== undefined ? !!patch.collectMessages : current.collectMessages,
-      collectThreads: patch.collectThreads !== undefined ? !!patch.collectThreads : current.collectThreads,
-      connected: patch.connected !== undefined ? patch.connected : current.connected,
-      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
-      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
-    };
-
-    this.memoryFallback.discordConfig = updated;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('discord_config', ?)
-        `);
-        stmt.run(JSON.stringify(updated));
-      } catch (err) {
-        console.error('SQLite saveDiscordConfig error:', err);
-      }
-    }
-
-    return updated;
-  }
-
-  public updateDiscordStats(collectedCount: number, connected: boolean = true): void {
-    const current = this.getDiscordConfig();
-    current.lastCollectedAt = new Date().toISOString();
-    current.collectedCount = (current.collectedCount || 0) + collectedCount;
-    current.connected = connected;
-    this.saveDiscordConfig(current);
   }
 
   // V2Ray / desktop proxy settings
