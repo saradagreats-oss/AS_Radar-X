@@ -64,7 +64,7 @@ function getClient() {
 }
 
 async function candidateModels(selectedModel?: string, allowModelFallback = false): Promise<string[]> {
-  const selected = String(selectedModel || storage.getCustomModel() || '').trim().replace(/^models\\//, '');
+  const selected = String(selectedModel || storage.getCustomModel() || '').trim().replace(/^models\//, '');
   const isAuto = !selected || selected.toLowerCase() === 'auto';
 
   if (!isAuto && !allowModelFallback) return [selected];
