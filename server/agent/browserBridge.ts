@@ -85,7 +85,7 @@ export const browserBridge = {
   },
 
   async capture(): Promise<BrowserCapture> {
-    return this.request('capture', {}, 75000);
+    return this.request('capture', {}, 35000);
   },
 
   async execute(action: string, args: Record<string, any>) {
