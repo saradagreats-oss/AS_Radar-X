@@ -237,7 +237,7 @@ Return strictly valid JSON matching the schema.`;
       prompt: {
         type: Type.STRING,
         description:
-          'Top-level detailed AI image prompt specifying subject, fine surface texture details, lighting, environment, camera lens, color palette, realism constraints. No human faces directly shown, no text in image.'
+          'Production-ready AI image prompt adapted to the buyer use case, visual angle, medium, composition, setting and realism requirements. Specify technical detail only where relevant. No human faces directly shown, no text in image.'
       },
       tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
       concept: { type: Type.STRING },
@@ -261,12 +261,12 @@ Return strictly valid JSON matching the schema.`;
       title: {
         type: Type.STRING,
         description:
-          'Single natural SEO-optimized English sentence combining main subject and cinematic movement details. No separate description. No special characters like |.'
+          'Single natural SEO-optimized English sentence describing the stock footage subject and useful motion. No separate description. No special characters like |.'
       },
       prompt: {
         type: Type.STRING,
         description:
-          'Top-level detailed AI video prompt specifying cinematic camera movement, choreography, fine texture details, lighting, camera lens, color palette, stabilization. No human faces directly shown, no text in video.'
+          'Production-ready AI video prompt adapted to the buyer's actual motion need. Describe purposeful subject movement; add camera movement, duration, loop and technical details only when useful. No human faces directly shown, no text in video.'
       },
       tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
       concept: { type: Type.STRING },
