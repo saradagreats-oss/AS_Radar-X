@@ -44,7 +44,7 @@ function inspectPortfolio(jobId: string, capture: any) {
     const status = /not accepted|rejected/.test(statusText) ? 'REJECTED' : /accepted|approved|online/.test(statusText) ? 'ACCEPTED' : /review|pending|submitted/.test(statusText) ? 'PENDING' : 'UNKNOWN';
     const idMatch = (href + ' ' + t).match(/(?:asset|image|video|file)[\s/_=-]*([A-Za-z0-9_-]{5,})/i) || href.match(/[?&](?:id|assetId)=([A-Za-z0-9_-]+)/i);
     const downloadMatch = t.match(/(?:downloads?|licensed)\s*[:#]?\s*([\d,]+)/i);
-    const earningsMatch = t.match(/(?:\$|USD\s*)\s*([\d,]+(?:\.\d{1,2})?)/i);
+    const earningsMatch = t.match(/(?:earnings|royalties|revenue)\s*[:\-]?\s*(?:\$|USD\s*)?([\d,]+(?:\.\d{1,2})?)/i);
     const reasonMatch = t.match(/(?:reason|similar content|quality issues|technical issues|intellectual property|policy violation)\s*[:\-]?\s*([^.;]{4,240})/i);
     return { assetId: idMatch?.[1] || '', title: String(row.title || t.slice(0, 180)), status, rejectionReason: status === 'REJECTED' ? (reasonMatch?.[1] || reasonMatch?.[0] || '') : '', downloads: downloadMatch ? Number(downloadMatch[1].replace(/,/g,'')) : null, earnings: earningsMatch ? Number(earningsMatch[1].replace(/,/g,'')) : null, thumbnail: String(row.image || ''), href, rawText: t.slice(0, 1200) };
   }).filter((a: any) => a.title && a.rawText.length > 12);
