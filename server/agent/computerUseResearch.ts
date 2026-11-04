@@ -371,37 +371,33 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       }
     }
     if (!opened) {
-      skippedDomains.set(host, startupFailures[startupFailures.length - 1] || 'Browser did not acknowledge the open request.');
+      const reason = startupFailures[startupFailures.length - 1] || 'Browser did not acknowledge the open request.';
+      skippedDomains.set(host, reason);
       log(input.jobId, 'site_skipped', `Skipped ${host} after ${SITE_CAPTURE_MAX_ATTEMPTS} browser-open attempts. Trying another marketplace.`, {
-        url: startUrl, host, attempts: SITE_CAPTURE_MAX_ATTEMPTS, reason: skippedDomains.get(host)
+        url: startUrl, host, attempts: SITE_CAPTURE_MAX_ATTEMPTS, reason
       }, startUrl);
       continue;
     }
-
-  const initialCapture = startupCapture;
-  if (!initialCapture) throw new Error('No public start page was captured.');
-  let capture: BrowserCapture = initialCapture;
-  let screenshots = firstShot ? 1 : 0;
 
     const outcome = await capturePublicPageWithRetries(input.jobId, 'startup', startUrl, unavailableCapture(startUrl, 'Initial page capture has not succeeded yet.'), input.onProgress);
     if (outcome.ok) {
       startupCapture = outcome.capture;
       firstShot = saveScreenshot(input.jobId, startupCapture.screenshotBase64);
-      log(input.jobId, 'page_visited', startupCapture.snapshot.title || capture.snapshot.url, {
-        url: capture.snapshot.url,
+      log(input.jobId, 'page_visited', startupCapture.snapshot.title || startupCapture.snapshot.url, {
+        url: startupCapture.snapshot.url,
         screenshot: firstShot,
         initialCapture: true,
-        headings: capture.snapshot.headings.slice(0, 20),
-        text: capture.snapshot.text.slice(0, 16000),
-        links: capture.snapshot.links.slice(0, 120),
-        images: capture.snapshot.images.slice(0, 80),
-        tables: capture.snapshot.tables.slice(0, 20)
-      }, capture.snapshot.url);
+        headings: startupCapture.snapshot.headings.slice(0, 20),
+        text: startupCapture.snapshot.text.slice(0, 16000),
+        links: startupCapture.snapshot.links.slice(0, 120),
+        images: startupCapture.snapshot.images.slice(0, 80),
+        tables: startupCapture.snapshot.tables.slice(0, 20)
+      }, startupCapture.snapshot.url);
       log(input.jobId, 'browser_preview', 'Public marketplace start page captured.', {
         screenshot: firstShot,
-        pageTitle: capture.snapshot.title,
+        pageTitle: startupCapture.snapshot.title,
         initialCapture: true
-      }, capture.snapshot.url);
+      }, startupCapture.snapshot.url);
       break;
     }
 
@@ -409,9 +405,12 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     startupFailures.push(`${host}: ${outcome.reason || 'Page capture failed.'}`);
   }
 
-  if (!startupCapture) {
+  const initialCapture = startupCapture;
+  if (!initialCapture) {
     throw new Error(`The embedded browser could not read any starting public marketplace after ${SITE_CAPTURE_MAX_ATTEMPTS} attempts per site. ${startupFailures.slice(-6).join(' | ') || 'Check the internet connection and restart the app.'}`);
   }
+  let capture: BrowserCapture = initialCapture;
+  let screenshots = firstShot ? 1 : 0;
 
   const tool: any[] = [{ type: 'computer_use', environment: 'browser', enable_prompt_injection_detection: true }];
   const prompt = [
