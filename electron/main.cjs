@@ -10,6 +10,7 @@ let mainWindow = null;
 let backendProcess = null;
 let quitting = false;
 let desktopProxyAuth = null;
+let desktopProxyConfig = { enabled: false, protocol: 'http', host: '127.0.0.1', port: 10809 };
 let researchBrowser = null;
 let browserVisible = false;
 let browserTakeover = false;
@@ -28,7 +29,10 @@ function safeHttpUrl(value) {
 }
 
 function attachResearchBrowser() {
-  if (!researchSession) researchSession = session.fromPartition('persist:as-radar-research');
+  if (!researchSession) {
+    researchSession = session.fromPartition('persist:as-radar-research');
+    void applyChromiumProxy(desktopProxyConfig).catch((error) => console.error('[AS-Radar-X research proxy]', error));
+  }
   if (!mainWindow || mainWindow.isDestroyed() || researchBrowser) return;
   researchBrowser = new WebContentsView({
     webPreferences: {
@@ -217,17 +221,21 @@ if (!hasSingleInstanceLock) {
 }
 
 async function applyChromiumProxy(config) {
+  desktopProxyConfig = { ...(config || {}), enabled: !!config?.enabled };
   desktopProxyAuth = config && config.enabled && config.username
     ? { username: String(config.username), password: String(config.password || '') }
     : null;
   if (config && config.enabled && config.host && Number(config.port) > 0) {
     const scheme = config.protocol === 'socks5' ? 'socks5' : 'http';
-    await session.defaultSession.setProxy({
+    const proxyConfig = {
       proxyRules: `${scheme}://${config.host}:${Number(config.port)}`,
       proxyBypassRules: '127.0.0.1;localhost;[::1]'
-    });
+    };
+    await session.defaultSession.setProxy(proxyConfig);
+    if (researchSession) await researchSession.setProxy(proxyConfig);
   } else {
     await session.defaultSession.setProxy({ mode: 'direct' });
+    if (researchSession) await researchSession.setProxy({ mode: 'direct' });
   }
 }
 
