@@ -34,10 +34,10 @@ function getText(interaction: any) {
 }
 
 export async function runComputerUseResearch(input: { jobId: string; niche: string; instructions?: string; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void }) {
-  const key = process.env.GEMINI_API_KEY || '';
+  const key = storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '';
   if (!key) throw new Error('Set a Gemini API key in Settings before starting research.');
   if (!browserBridge.available) throw new Error('Computer-use research requires the Windows desktop application.');
-  const ai = new GoogleGenAI({ apiKey: key });
+  const ai: any = new GoogleGenAI({ apiKey: key });
   const model = input.model || 'gemini-3.8-flash';
   const maxTurns = Math.max(12, Math.min(80, input.maxTurns || 50));
   await browserBridge.show('https://www.google.com/');
