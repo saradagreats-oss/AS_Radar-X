@@ -5,6 +5,7 @@ interface PortfolioTableProps { refreshKey: number; }
 export function PortfolioTable({ refreshKey }: PortfolioTableProps) {
   const [assets, setAssets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [snapshot, setSnapshot] = useState<any | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -15,17 +16,19 @@ export function PortfolioTable({ refreshKey }: PortfolioTableProps) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
       })
-      .then((data) => { if (active) { setAssets(Array.isArray(data.assets) ? data.assets : []); setError(''); } })
+      .then((data) => { if (active) { setAssets(Array.isArray(data.assets) ? data.assets : []); setSnapshot(data.snapshot || null); setError(''); } })
       .catch((err) => { if (active) setError(err.message || 'Unable to load portfolio data.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [refreshKey]);
 
+  const knownDownloads = assets.filter((asset) => asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)));
   const counts = {
-    accepted: assets.filter((asset) => asset.status === 'ACCEPTED').length,
-    rejected: assets.filter((asset) => asset.status === 'REJECTED').length,
-    pending: assets.filter((asset) => asset.status === 'PENDING').length,
-    downloads: assets.reduce((sum, asset) => sum + (Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : 0), 0)
+    accepted: snapshot?.accepted ?? assets.filter((asset) => asset.status === 'ACCEPTED').length,
+    rejected: snapshot?.rejected ?? assets.filter((asset) => asset.status === 'REJECTED').length,
+    pending: snapshot?.pending ?? assets.filter((asset) => asset.status === 'PENDING').length,
+    downloads: snapshot?.totalDownloads ?? (knownDownloads.length ? knownDownloads.reduce((sum, asset) => sum + Number(asset.downloads), 0) : null),
+    synced: snapshot?.rowCount ?? assets.length
   };
 
   return (
@@ -35,7 +38,7 @@ export function PortfolioTable({ refreshKey }: PortfolioTableProps) {
           ['Accepted', counts.accepted, 'text-emerald-400'],
           ['Rejected', counts.rejected, 'text-rose-400'],
           ['In Review', counts.pending, 'text-amber-300'],
-          ['Recorded Downloads', counts.downloads, 'text-[var(--accent-amber)]']
+          ['Recorded Downloads', counts.downloads == null ? '—' : counts.downloads, 'text-[var(--accent-amber)]']
         ].map(([label, value, color]) => (
           <div key={String(label)} className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-4">
             <div className="text-[0.64rem] font-mono uppercase text-[var(--text-dim)]">{label}</div>
@@ -43,6 +46,7 @@ export function PortfolioTable({ refreshKey }: PortfolioTableProps) {
           </div>
         ))}
       </div>
+      <div className="text-[0.64rem] text-[var(--text-dim)]">Last portfolio sync: {snapshot?.capturedAt ? new Date(snapshot.capturedAt).toLocaleString() : 'Not yet captured'} · {counts.synced} records visible in last snapshot</div>
       <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg overflow-hidden">
         <div className="flex justify-between items-center px-4 py-3 border-b border-[var(--border-subtle)]">
           <div>
