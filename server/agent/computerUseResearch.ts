@@ -120,6 +120,13 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   ].join('\n');
   log(input.jobId, 'agent_started', `Gemini Computer Use agent started with ${model}.`, { niche: input.niche, maxTurns, startingUrl: capture.snapshot.url });
   input.onProgress?.('PLANNING', 8, 'Gemini is reviewing the portfolio and planning its research.');
+  if (isVerification(capture.snapshot)) {
+    await browserBridge.setTakeover(true);
+    await handoff(input.jobId, 'Please sign in or complete the human verification manually in the visible browser, then press Continue.', capture.snapshot.url, input.onHandoff, input.onResume);
+    await browserBridge.setTakeover(false);
+    capture = await browserBridge.capture();
+    inspectPortfolio(input.jobId, capture);
+  }
   let interaction: any = await ai.interactions.create({ model, input: [{ type: 'text', text: prompt + '\nVISIBLE START PAGE:\n' + capture.snapshot.text.slice(0, 14000) }, ...(capture.screenshotBase64 ? [{ type: 'image', data: capture.screenshotBase64, mime_type: capture.screenshotMimeType || 'image/jpeg' }] : [])], tools: tool });
   let actions = 0, pages = 0;
   const visited = new Set<string>();
@@ -150,6 +157,8 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
         await browserBridge.setTakeover(false);
         capture = await browserBridge.capture();
         inspectPortfolio(input.jobId, capture);
+        results.push({ skipped: true, reason: 'The user completed sign-in or human verification. Re-evaluate the current page and choose a fresh action.' });
+        continue;
       }
       const allowed = ['click','double_click','triple_click','middle_click','right_click','move','type','navigate','scroll','wait','go_back','go_forward','press_key','hotkey','take_screenshot','open_app','type_text_at'];
       if (!allowed.includes(call.name)) { results.push({ skipped: true, reason: `Unsupported or disallowed action: ${call.name}` }); continue; }
