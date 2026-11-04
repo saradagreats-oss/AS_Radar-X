@@ -147,6 +147,38 @@ class StorageManager {
 
       CREATE INDEX IF NOT EXISTS idx_portfolio_changes_job ON portfolio_change_log(job_id, created_at);
 
+      CREATE TABLE IF NOT EXISTS research_knowledge (
+        fingerprint TEXT PRIMARY KEY,
+        canonical_url TEXT NOT NULL,
+        normalized_title TEXT NOT NULL,
+        keywords_json TEXT NOT NULL,
+        category TEXT NOT NULL,
+        commercial_intent TEXT NOT NULL,
+        source_family TEXT NOT NULL,
+        observation TEXT,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        seen_count INTEGER NOT NULL DEFAULT 1,
+        last_job_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_research_knowledge_seen ON research_knowledge(last_seen_at);
+      CREATE INDEX IF NOT EXISTS idx_research_knowledge_family ON research_knowledge(source_family);
+
+      CREATE TABLE IF NOT EXISTS research_knowledge_observations (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        observation_json TEXT NOT NULL,
+        UNIQUE(fingerprint, content_hash)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_observations_job ON research_knowledge_observations(job_id, collected_at);
+
       CREATE TABLE IF NOT EXISTS portfolio_snapshots (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL,
@@ -313,6 +345,61 @@ class StorageManager {
         current: JSON.parse(row.current_json || '{}'), createdAt: row.created_at
       }));
     } catch (error) { console.error('SQLite getPortfolioChanges error:', error); return []; }
+  }
+
+
+  public saveNormalizedResearchEvidence(jobId: string, records: Array<Record<string, any>>) {
+    if (!this.db || !Array.isArray(records) || !records.length) return;
+    const upsert = this.db.prepare('INSERT INTO research_knowledge (fingerprint, canonical_url, normalized_title, keywords_json, category, commercial_intent, source_family, observation, first_seen_at, last_seen_at, seen_count, last_job_id, content_hash, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT(fingerprint) DO UPDATE SET canonical_url=excluded.canonical_url, normalized_title=excluded.normalized_title, keywords_json=excluded.keywords_json, category=excluded.category, commercial_intent=excluded.commercial_intent, source_family=excluded.source_family, observation=excluded.observation, last_seen_at=excluded.last_seen_at, seen_count=research_knowledge.seen_count+1, last_job_id=excluded.last_job_id, content_hash=excluded.content_hash, record_json=excluded.record_json');
+    const observation = this.db.prepare('INSERT OR IGNORE INTO research_knowledge_observations (id, fingerprint, job_id, collected_at, content_hash, observation_json) VALUES (?, ?, ?, ?, ?, ?)');
+    try {
+      for (const record of records) {
+        const collectedAt = String(record.collectedAt || new Date().toISOString());
+        const fingerprint = String(record.fingerprint || '');
+        const contentHash = String(record.contentHash || '');
+        if (!fingerprint || !contentHash) continue;
+        const payload = JSON.stringify(record);
+        upsert.run(
+          fingerprint, String(record.canonicalUrl || record.url || ''), String(record.title || ''),
+          JSON.stringify(record.keywords || []), String(record.category || 'Unknown'),
+          String(record.commercialIntent || 'Unknown'), String(record.sourceFamily || 'website'),
+          String(record.observation || '').slice(0, 12000), collectedAt, collectedAt,
+          jobId, contentHash, payload
+        );
+        observation.run(crypto.createHash('sha256').update(fingerprint + '|' + contentHash).digest('hex'), fingerprint, jobId, collectedAt, contentHash, payload);
+      }
+    } catch (error) {
+      console.error('SQLite saveNormalizedResearchEvidence error:', error);
+    }
+  }
+
+  public getRecentNormalizedResearchEvidence(limit = 80) {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.max(1, Math.min(500, Math.floor(limit) || 80));
+      const rows = this.db.prepare('SELECT record_json, first_seen_at, last_seen_at, seen_count, last_job_id FROM research_knowledge ORDER BY last_seen_at DESC LIMIT ?').all(safeLimit) as any[];
+      return rows.map(row => ({
+        ...JSON.parse(row.record_json || '{}'),
+        firstSeenAt: row.first_seen_at,
+        lastSeenAt: row.last_seen_at,
+        seenCount: Number(row.seen_count) || 1,
+        lastJobId: row.last_job_id
+      }));
+    } catch (error) {
+      console.error('SQLite getRecentNormalizedResearchEvidence error:', error);
+      return [];
+    }
+  }
+
+  public getNormalizedEvidenceObservationCount(jobId: string) {
+    if (!this.db) return 0;
+    try {
+      const row = this.db.prepare('SELECT COUNT(*) AS count FROM research_knowledge_observations WHERE job_id = ?').get(jobId) as any;
+      return Number(row?.count) || 0;
+    } catch (error) {
+      console.error('SQLite getNormalizedEvidenceObservationCount error:', error);
+      return 0;
+    }
   }
 
   public savePortfolioSnapshot(jobId: string, sourceUrl: string, summary: Record<string, any>) {
