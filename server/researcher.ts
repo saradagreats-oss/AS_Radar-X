@@ -18,6 +18,7 @@ export interface ResearchJobOptions {
   niche?: string;
   titleInstructions?: string;
   tagCount?: number;
+  model?: string;
 }
 
 class ResearchCoordinator {
@@ -181,7 +182,7 @@ class ResearchCoordinator {
         instructions: userInstructions + (pdfDoc?.instructions ? `\nPDF REFERENCE DIRECTIVES: ${pdfDoc.instructions}` : ''),
         photoCount,
         videoCount,
-        model: storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto',
+        model: options.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto',
         maxTurns: 55,
         memoryContext,
         onProgress: (stage, progress, message) => {
@@ -293,7 +294,7 @@ class ResearchCoordinator {
         evidenceSources,
         portfolioSummary,
         model: agentResult?.model || storage.getCustomModel(),
-        allowModelFallback: String(storage.getCustomModel() || '').toLowerCase() === 'auto'
+        allowModelFallback: String(options.model || storage.getCustomModel() || '').toLowerCase() === 'auto'
       });
 
       const photos = analystOutput.photos || [];
