@@ -154,7 +154,7 @@ async function createInteractionAttempt(
     const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
     log(jobId, 'gemini_wait', `Gemini is still processing the ${phaseLabel} (${elapsedSeconds}s).`, { model, phase, elapsedSeconds });
     if (phase === 'initial') {
-      onProgress?.('PLANNING', Math.min(15, 9 + Math.floor(elapsedSeconds / 15)), `Waiting for Gemini's first response · ${elapsedSeconds}s · ${model}`);
+      onProgress?.('PLANNING', Math.min(12, 9 + Math.floor(elapsedSeconds / 15)), `Waiting for Gemini's first response · ${elapsedSeconds}s · ${model}`);
     }
   }, GEMINI_HEARTBEAT_INTERVAL_MS);
 
