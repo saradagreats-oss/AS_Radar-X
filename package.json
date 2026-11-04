@@ -16,7 +16,7 @@
     "desktop:dir": "npm run build && npm run desktop:icon && electron-builder --win dir --x64"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
+    "@google/genai": "^2.32.0",
     "archiver": "^8.0.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -54,7 +54,6 @@
       "dist/**/*",
       "server/**/*",
       "server.ts",
-      "electron/main.cjs",
       "package.json",
       "!src/**/*",
       "!scripts/**/*",
@@ -62,7 +61,8 @@
       "!**/*.map",
       "!**/README.md",
       "!**/*.test.*",
-      "!**/__tests__/**/*"
+      "!**/__tests__/**/*",
+      "electron/**/*"
     ],
     "win": {
       "target": [
