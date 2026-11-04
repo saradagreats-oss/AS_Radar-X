@@ -75,12 +75,18 @@ function getText(interaction: any) {
 
 function isVerification(snapshot: any) {
   const text = String(snapshot?.text || '');
-  return !!snapshot?.verificationHint || (snapshot?.passwordFieldCount > 0 && /sign in|log in|password|account/i.test(text));
+  let url = '';
+  try { url = new URL(String(snapshot?.url || '')).hostname.toLowerCase(); } catch { /* no URL */ }
+  const adobeAuthHost = /(^|\\.)((account|auth)\\.adobe\\.com|adobeid[^.]*\\.services\\.adobe\\.com)$/.test(url);
+  const authCopy = /sign in to adobe|sign in to continue|enter your password|email address to continue|two.step verification|verify your identity/i.test(text);
+  return !!snapshot?.verificationHint || snapshot?.passwordFieldCount > 0 || (adobeAuthHost && authCopy);
 }
 
 function actionSafety(call: any) {
   const args = call?.arguments || {};
-  return String(args.safety_decision || call?.safety_decision || call?.safetyDecision || '').toLowerCase();
+  const raw = args.safety_decision ?? call?.safety_decision ?? call?.safetyDecision ?? '';
+  if (raw && typeof raw === 'object') return String(raw.decision || raw.status || '').toLowerCase();
+  return String(raw).toLowerCase();
 }
 
 export async function runComputerUseResearch(input: { jobId: string; niche: string; instructions?: string; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void; memoryContext?: string }) {
@@ -153,10 +159,12 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
         continue;
       }
       if (safety.includes('blocked')) throw new Error(`Gemini safety system blocked browser action: ${call.name}.`);
+      let safetyAcknowledgement = false;
       if (safety.includes('require_confirmation')) {
         await browserBridge.setTakeover(true);
         await handoff(input.jobId, `Gemini requests your confirmation: ${intent}`, capture.snapshot.url, input.onHandoff, input.onResume);
         await browserBridge.setTakeover(false);
+        safetyAcknowledgement = true;
       }
       if (isVerification(capture.snapshot)) {
         await browserBridge.setTakeover(true);
@@ -188,7 +196,7 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
         else if (call.name === 'take_screenshot') result = { requested: true };
         else if (call.name === 'open_app') result = { opened: true };
       } catch (error: any) { result = { error: error.message || String(error) }; }
-      results.push(result);
+      results.push(safetyAcknowledgement ? { ...result, safety_acknowledgement: true } : result);
       actions++;
       capture = await browserBridge.capture();
       const screenshotPath = saveScreenshot(input.jobId, capture.screenshotBase64); if (screenshotPath) screenshots++;
