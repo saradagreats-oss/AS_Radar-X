@@ -83,7 +83,7 @@ function actionSafety(call: any) {
   return String(args.safety_decision || call?.safety_decision || call?.safetyDecision || '').toLowerCase();
 }
 
-export async function runComputerUseResearch(input: { jobId: string; niche: string; instructions?: string; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void }) {
+export async function runComputerUseResearch(input: { jobId: string; niche: string; instructions?: string; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void; memoryContext?: string }) {
   const key = storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '';
   if (!key) throw new Error('Set a Gemini API key in Settings before starting research.');
   if (!browserBridge.available) throw new Error('Computer-use research requires the Windows desktop application.');
@@ -101,6 +101,7 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     'NICHE / OBJECTIVE: ' + input.niche,
     'ADDITIONAL USER INSTRUCTIONS: ' + (input.instructions || 'None'),
     'OUTPUT LIMIT: at most ' + input.photoCount + ' photo and ' + input.videoCount + ' video opportunities.',
+    'PREVIOUS RESEARCH MEMORY (deduplication and discovery context only; NOT current market evidence): ' + (input.memoryContext || 'No prior research memory supplied.'),
     'Start by checking the currently visible Adobe Stock Contributor portfolio. Keep it read-only. Inspect visible accepted/rejected/pending rows, rejection reason text, downloads and earnings only where explicitly shown. Never upload, edit, delete, submit, change account settings or message anyone.',
     'If logged out, CAPTCHA, consent, human verification or account security step appears, pause immediately and yield control to the user. Never type passwords, OTPs or security answers.',
     'After the portfolio audit, autonomously plan and conduct deep marketplace research. Decide your own queries, source pages, pagination and follow-up questions. Do not use a fixed URL list. Inspect multiple independent sites and pages, not just one search engine page.',
