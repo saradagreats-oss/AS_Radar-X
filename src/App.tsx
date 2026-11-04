@@ -146,6 +146,7 @@ export default function App() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const eventPollRef = useRef<NodeJS.Timeout | null>(null);
+  const eventOffsetRef = useRef<number>(0);
 
   // Show Toast
   const showToast = (msg: string) => {
@@ -201,7 +202,7 @@ export default function App() {
         setElapsedSeconds(diff);
       }
       setShowBrowser(true);
-      loadResearchEvents(storedJobId);
+      loadResearchEvents(storedJobId, true);
       pollJobStatus(storedJobId);
     }
   }, []);
@@ -745,12 +746,21 @@ export default function App() {
   };
 
   // Load live browser events and normalized evidence records.
-  const loadResearchEvents = async (jobId: string) => {
+  const loadResearchEvents = async (jobId: string, reset = false) => {
     try {
-      const res = await fetch(getApiUrl('/api/research/events/' + encodeURIComponent(jobId)));
+      if (reset) {
+        eventOffsetRef.current = 0;
+        setResearchEvents([]);
+      }
+      const offset = eventOffsetRef.current;
+      const res = await fetch(getApiUrl('/api/research/events/' + encodeURIComponent(jobId) + '?after=' + offset));
       if (!res.ok) return;
       const data = await res.json();
-      setResearchEvents(Array.isArray(data.events) ? data.events : []);
+      const next = Array.isArray(data.events) ? data.events : [];
+      if (next.length) {
+        eventOffsetRef.current = offset + next.length;
+        setResearchEvents((previous) => reset ? next : [...previous, ...next]);
+      }
     } catch {
       // Status polling remains the source of truth if event polling briefly fails.
     }
@@ -785,6 +795,7 @@ export default function App() {
     setProgressPercent(5);
     setResearchStage('PLANNING');
     setProgressMessage('Gemini is planning the research...');
+    eventOffsetRef.current = 0;
     setResearchEvents([]);
     setShowBrowser(true);
 
@@ -887,8 +898,9 @@ export default function App() {
       if (!isHistoricalReport) priorCurrentReportRef.current = currentReport;
       setCurrentReport(report);
       setPortfolioRefreshKey((value) => value + 1);
+      eventOffsetRef.current = 0;
       setResearchEvents([]);
-      await loadResearchEvents(jobId);
+      await loadResearchEvents(jobId, true);
       setIsHistoricalReport(true);
       setOpenEvidenceMap({});
       setActiveTab('research');
