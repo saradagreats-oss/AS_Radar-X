@@ -40,8 +40,8 @@ interface AnalystInput {
 interface GeminiAnalystOutput {
   evidence_summary: string;
   warnings?: string[];
-  photos: PhotoOpportunity[];
-  videos: VideoOpportunity[];
+  photos: Array<Record<string, any>>;
+  videos: Array<Record<string, any>>;
 }
 
 function getClient() {
