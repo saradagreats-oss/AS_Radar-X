@@ -6,7 +6,6 @@ import { normalizeResearchPages } from './normalization/researchKnowledge.js';
 import { storage } from './storage/database.js';
 import type {
   CollectorStatus,
-  PortfolioSummary,
   ResearchJobState,
   ResearchReport,
   ResearchStage,
@@ -16,7 +15,6 @@ import type {
 
 export interface ResearchJobOptions {
   niche?: string;
-  titleInstructions?: string;
   tagCount?: number;
   model?: string;
 }
@@ -107,26 +105,6 @@ class ResearchCoordinator {
     return { pages, sources };
   }
 
-  private buildMemoryContext(pastHistory: Array<{ title: string; concept: string }>, rejectedItems: string[], knowledge: Array<Record<string, any>>, portfolioSnapshot: any): string {
-    const opportunities = pastHistory.slice(0, 120).map((item, index) => String(index + 1) + '. ' + item.title + ' | ' + (item.concept || '')).join('\n');
-    const priorPages = knowledge.slice(0, 80).map((item: any) => {
-      const keywords = Array.isArray(item.keywords) ? item.keywords.slice(0, 16).join(', ') : '';
-      return '- ' + item.title + ' | ' + item.sourceFamily + ' | category=' + item.category + ' | seen=' + (item.seenCount || 1) + ' | terms=' + keywords + ' | url=' + item.canonicalUrl;
-    }).join('\n');
-    return [
-      'PREVIOUS OPPORTUNITIES (avoid exact and near repeats; not current market evidence):',
-      opportunities || 'None recorded.',
-      '',
-      'USER REJECTIONS (strict negative constraints):',
-      rejectedItems.map(item => '- ' + item).join('\n') || 'None supplied.',
-      '',
-      'PREVIOUSLY NORMALIZED RESEARCH KNOWLEDGE (deduplication and discovery memory only; not proof of current demand):',
-      priorPages || 'No normalized pages recorded yet.',
-      '',
-      'PREVIOUS ADOBE PORTFOLIO SNAPSHOT (duplicate/status reference only; re-check the live portfolio):',
-      JSON.stringify(portfolioSnapshot?.summary || null)
-    ].join('\n');
-  }
   private buildResearchMemo(agentMemo: string, pages: any[], sources: SourceEvidenceRecord[]): string {
     const observations = pages.slice(0, 45).map((event: any, index: number) => {
       const detail = event.details || {};
@@ -153,87 +131,36 @@ class ResearchCoordinator {
   private async executePipeline(jobId: string, photoCount: number, videoCount: number, options: ResearchJobOptions) {
     const started = Date.now();
     const warnings: string[] = [];
-    const userInstructions = storage.getInstructions();
     const rejectedItems = storage.getRejectedContent();
     const pastHistory = storage.getRecentOpportunityHistory(120);
-    const pdfDoc = storage.getPdfDocument();
     const tagCount = Math.max(1, Math.min(50, Math.floor(Number(options.tagCount) || 25)));
-    const titleInstructions = String(options.titleInstructions || '').trim();
     const niche = String(options.niche || '').trim() ||
-      'Discover the strongest evidence-backed, durable commercial stock photo and video opportunities across all relevant industries. Choose the research direction autonomously from current evidence and portfolio gaps.';
+      'Discover evidence-backed, durable commercial stock photo and video opportunities from current public market evidence. Choose the research direction autonomously.';
 
-    const previousPortfolio = storage.getLatestPortfolioSnapshot();
     const priorKnowledge = storage.getRecentNormalizedResearchEvidence(100);
-    const memoryContext = this.buildMemoryContext(pastHistory, rejectedItems, priorKnowledge, previousPortfolio);
     let agentResult: any = null;
     let evidenceSources: SourceEvidenceRecord[] = [];
-    let portfolioSummary: PortfolioSummary | null = null;
     let webResearch: WebResearchResult | undefined;
 
     try {
-      this.updateStage(jobId, 'PLANNING', 7, 'Gemini is planning the portfolio audit and live market research.');
-      if (pdfDoc) {
-        this.updateStage(jobId, 'PDF_ANALYSIS', 9, `Loading user reference document: ${pdfDoc.fileName}`);
-      }
+      this.updateStage(jobId, 'PLANNING', 7, 'The research agent is planning public market and buyer-demand research.');
 
       agentResult = await runComputerUseResearch({
         jobId,
         niche,
-        instructions: userInstructions + (pdfDoc?.instructions ? `\nPDF REFERENCE DIRECTIVES: ${pdfDoc.instructions}` : ''),
+        rejectedItems,
         photoCount,
         videoCount,
         model: options.model || storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto',
-        maxTurns: 55,
-        memoryContext,
+        maxTurns: 70,
         onProgress: (stage, progress, message) => {
           this.updateStage(jobId, stage as ResearchStage, progress, message);
         },
         onHandoff: (message) => this.updateStage(jobId, 'PAUSED_FOR_USER', this.activeJobs.get(jobId)?.progress || 30, message),
-        onResume: () => this.updateStage(jobId, 'BROWSER_RESEARCH', this.activeJobs.get(jobId)?.progress || 35, 'Human verification completed. Gemini is resuming research.')
+        onResume: () => this.updateStage(jobId, 'BROWSER_RESEARCH', this.activeJobs.get(jobId)?.progress || 35, 'Human verification completed. Public-market research is resuming.')
       });
 
       await browserBridge.hide().catch(() => undefined);
-      this.updateStage(jobId, 'PORTFOLIO_SYNC', 81, 'Comparing the latest visible Adobe portfolio data with previous snapshots.');
-      const latestPortfolio = storage.getLatestPortfolioSnapshot(jobId);
-      if (latestPortfolio?.summary) {
-        const p: any = latestPortfolio.summary;
-        const old: any = previousPortfolio?.summary || {};
-        const syncedAssets = storage.getPortfolioAssetsForJob(jobId).length;
-        const changedAssets = storage.getPortfolioChanges(jobId).length;
-        portfolioSummary = {
-          rowCount: Number(p.rowCount) || 0,
-          accepted: p.accepted ?? null,
-          rejected: p.rejected ?? null,
-          pending: p.pending ?? null,
-          totalDownloads: p.totalDownloads ?? null,
-          changedAssets,
-          syncedAssets,
-          sourceUrl: latestPortfolio.sourceUrl,
-          capturedAt: latestPortfolio.capturedAt
-        };
-        const deltas = [
-          p.accepted != null && old.accepted != null ? `accepted ${Number(p.accepted) - Number(old.accepted) >= 0 ? '+' : ''}${Number(p.accepted) - Number(old.accepted)}` : '',
-          p.rejected != null && old.rejected != null ? `rejected ${Number(p.rejected) - Number(old.rejected) >= 0 ? '+' : ''}${Number(p.rejected) - Number(old.rejected)}` : '',
-          p.totalDownloads != null && old.totalDownloads != null ? `downloads ${Number(p.totalDownloads) - Number(old.totalDownloads) >= 0 ? '+' : ''}${Number(p.totalDownloads) - Number(old.totalDownloads)}` : ''
-        ].filter(Boolean);
-        storage.appendResearchEvent({
-          id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type: 'portfolio_delta',
-          message: deltas.length ? `Portfolio changes since previous snapshot: ${deltas.join(', ')}` : 'Latest portfolio snapshot saved. Previous comparable totals were not available.',
-          url: latestPortfolio.sourceUrl,
-          details: { changedAssets, syncedAssets, changes: storage.getPortfolioChanges(jobId), deltas, current: portfolioSummary, previous: old }
-        });
-      } else {
-        warnings.push('Adobe Contributor portfolio could not be read in this run. Previous locally stored portfolio data has been retained; no new status or download figures were guessed.');
-        const old: any = previousPortfolio?.summary || {};
-        if (previousPortfolio) {
-          portfolioSummary = {
-            rowCount: Number(old.rowCount) || 0, accepted: old.accepted ?? null, rejected: old.rejected ?? null,
-            pending: old.pending ?? null, totalDownloads: old.totalDownloads ?? null, changedAssets: 0,
-            sourceUrl: previousPortfolio.sourceUrl, capturedAt: previousPortfolio.capturedAt
-          };
-        }
-      }
-
       this.updateStage(jobId, 'NORMALIZING', 84, 'Deduplicating captured pages and normalizing source evidence.');
       const built = this.buildSourceEvidence(jobId);
       evidenceSources = built.sources;
@@ -259,7 +186,7 @@ class ResearchCoordinator {
         supply_or_differentiation_signal: '',
         inference: ''
       }));
-      const researchMemo = this.buildResearchMemo(agentResult?.finalText || '', built.pages, evidenceSources) + '\n\nHISTORICAL DEDUPLICATION MEMORY (not current evidence):\n' + memoryContext.slice(0, 18000);
+      const researchMemo = this.buildResearchMemo(agentResult?.finalText || '', built.pages, evidenceSources);
       webResearch = {
         summary: agentResult?.finalText || 'Computer-use research finished without a narrative memo. The captured source observations remain available.',
         findings: observations.slice(0, 40),
@@ -269,13 +196,11 @@ class ResearchCoordinator {
 
       const status: Record<string, CollectorStatus> = {
         'Gemini Computer Use': agentResult?.model ? 'AVAILABLE' : 'ERROR',
-        'Visible stock and commercial web pages': evidenceSources.length ? 'AVAILABLE' : 'EMPTY',
-        'Adobe Contributor portfolio': latestPortfolio && Number((latestPortfolio.summary as any)?.rowCount || 0) > 0 ? 'AVAILABLE' : 'UNAVAILABLE'
+        'Public stock marketplaces and commercial web sources': evidenceSources.length ? 'AVAILABLE' : 'EMPTY'
       };
       const sourceNames = Array.from(new Set(evidenceSources.map(source => source.source_family || 'Public web')));
-      if (latestPortfolio) sourceNames.push('Adobe Contributor Portfolio');
 
-      this.updateStage(jobId, 'FINAL_ANALYSIS', 87, 'The final analyst is synthesizing evidence, checking portfolio conflicts and scoring each candidate.');
+      this.updateStage(jobId, 'FINAL_ANALYSIS', 87, 'The analyst is cross-checking public demand, marketplace supply, visual gaps and commercial uses.');
       const analystOutput = await runGeminiStrategicAnalyst({
         clusters: [],
         clusterAnalyses: [],
@@ -283,16 +208,12 @@ class ResearchCoordinator {
         sourceStatuses: status,
         requestedPhotoCount: photoCount,
         requestedVideoCount: videoCount,
-        userCustomInstructions: userInstructions,
         rejectedContentList: rejectedItems,
         pastOpportunitiesHistory: pastHistory,
         webResearch,
-        pdfDoc,
         tagCount,
-        titleInstructions,
         researchMemo,
         evidenceSources,
-        portfolioSummary,
         model: agentResult?.model || storage.getCustomModel(),
         allowModelFallback: String(options.model || storage.getCustomModel() || '').toLowerCase() === 'auto'
       });
@@ -339,7 +260,6 @@ class ResearchCoordinator {
         videos,
         internal_score_explanation: scoreSummary.formula,
         score_summary: scoreSummary,
-        portfolio_summary: portfolioSummary,
         browser_research: {
           pages: Number(agentResult?.pages) || evidenceSources.length,
           actions: Number(agentResult?.actions) || 0,
@@ -368,8 +288,8 @@ class ResearchCoordinator {
       }
       storage.appendResearchEvent({
         id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type: 'report_complete',
-        message: 'Research report saved with score breakdown, portfolio snapshot and source evidence.',
-        details: { status: report.status, photos: photos.length, videos: videos.length, scoreSummary, portfolioSummary }
+        message: 'Research report saved with score breakdown and public-source evidence.',
+        details: { status: report.status, photos: photos.length, videos: videos.length, scoreSummary, sourceCount: evidenceSources.length }
       });
     } catch (error: any) {
       await browserBridge.hide().catch(() => undefined);
