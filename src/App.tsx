@@ -962,7 +962,7 @@ export default function App() {
                   {currentReport.browser_research && (
                     <div className="flex flex-wrap items-center justify-between gap-2 mb-4 text-[0.65rem] font-mono text-[var(--text-dim)]">
                       <span>Browser: {currentReport.browser_research.pages} pages · {currentReport.browser_research.actions} actions · {currentReport.browser_research.screenshots} screenshots</span>
-                      <button onClick={() => { setShowBrowser(true); setActiveTab('research'); }} className="text-[var(--accent-amber)] hover:underline">Reopen research browser & captures</button>
+                      <button onClick={() => { setShowBrowser(true); setActiveTab('research'); }} className="text-[var(--accent-amber)] hover:underline">Review websites, retries & Gemini instructions</button>
                     </div>
                   )}
                   {currentReport.evidence_sources && currentReport.evidence_sources.length > 0 && (
