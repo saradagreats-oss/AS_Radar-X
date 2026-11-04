@@ -179,6 +179,18 @@ class StorageManager {
 
       CREATE INDEX IF NOT EXISTS idx_portfolio_status ON portfolio_assets(status);
 
+      CREATE TABLE IF NOT EXISTS portfolio_change_log (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        asset_key TEXT NOT NULL,
+        change_type TEXT NOT NULL,
+        previous_json TEXT,
+        current_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_changes_job ON portfolio_change_log(job_id, created_at);
+
       CREATE TABLE IF NOT EXISTS portfolio_snapshots (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL,
@@ -291,16 +303,69 @@ class StorageManager {
     if (!this.db) return;
     const now = new Date().toISOString();
     try {
+      const find = this.db.prepare('SELECT first_seen_at, source_asset_id, status, title, rejection_reason, downloads, earnings FROM portfolio_assets WHERE asset_key = ?');
       const stmt = this.db.prepare(`INSERT INTO portfolio_assets (asset_key, source_asset_id, status, title, rejection_reason, downloads, earnings, first_seen_at, last_seen_at, last_job_id, record_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=excluded.downloads, earnings=excluded.earnings, last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
+        ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=COALESCE(excluded.downloads, portfolio_assets.downloads), earnings=COALESCE(excluded.earnings, portfolio_assets.earnings), last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
+      const change = this.db.prepare('INSERT INTO portfolio_change_log (id, job_id, asset_key, change_type, previous_json, current_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
       for (const asset of assets) {
         const sourceId = String(asset.assetId || asset.id || '').trim();
-        const stableKey = sourceId ? 'adobe:' + sourceId : 'adobe:hash:' + crypto.createHash('sha256').update([asset.title, asset.status, asset.thumbnail].join('|')).digest('hex');
-        const old = this.db.prepare('SELECT first_seen_at FROM portfolio_assets WHERE asset_key = ?').get(stableKey) as any;
-        stmt.run(stableKey, sourceId || null, String(asset.status || 'UNKNOWN'), String(asset.title || ''), String(asset.rejectionReason || ''), asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : null, asset.earnings !== null && asset.earnings !== undefined && Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : null, old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, sourceUrl }));
+        const stableDetails = [
+          String(asset.title || '').trim().toLowerCase(),
+          String(asset.href || '').trim().split('?')[0],
+          String(asset.thumbnail || '').trim().split('?')[0]
+        ].join('|');
+        const stableKey = sourceId
+          ? 'adobe:' + sourceId
+          : 'adobe:hash:' + crypto.createHash('sha256').update(stableDetails).digest('hex');
+        const old = find.get(stableKey) as any;
+        const downloads = asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : old?.downloads ?? null;
+        const earnings = asset.earnings !== null && asset.earnings !== undefined && Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : old?.earnings ?? null;
+        const normalized = {
+          sourceAssetId: sourceId || old?.source_asset_id || null,
+          status: String(asset.status || old?.status || 'UNKNOWN'),
+          title: String(asset.title || old?.title || ''),
+          rejectionReason: String(asset.rejectionReason || (asset.status === 'REJECTED' ? old?.rejection_reason || '' : '')),
+          downloads,
+          earnings,
+          sourceUrl
+        };
+        const previous = old ? {
+          status: old.status, title: old.title, rejectionReason: old.rejection_reason,
+          downloads: old.downloads, earnings: old.earnings
+        } : null;
+        const changes: string[] = [];
+        if (!old) changes.push('NEW_ASSET');
+        else {
+          if (String(previous.status || '') !== normalized.status) changes.push('STATUS_CHANGED');
+          if (String(previous.rejectionReason || '') !== normalized.rejectionReason) changes.push('REJECTION_REASON_CHANGED');
+          if (previous.downloads !== normalized.downloads || previous.earnings !== normalized.earnings) changes.push('PERFORMANCE_CHANGED');
+          if (String(previous.title || '') !== normalized.title) changes.push('METADATA_CHANGED');
+        }
+        stmt.run(
+          stableKey, normalized.sourceAssetId, normalized.status, normalized.title,
+          normalized.rejectionReason, normalized.downloads, normalized.earnings,
+          old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, ...normalized })
+        );
+        if (changes.length) {
+          for (const changeType of changes) {
+            change.run(crypto.randomUUID(), jobId, stableKey, changeType, previous ? JSON.stringify(previous) : null, JSON.stringify(normalized), now);
+          }
+        }
       }
     } catch (error) { console.error('SQLite upsertPortfolioAssets error:', error); }
+  }
+
+  public getPortfolioChanges(jobId: string) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM portfolio_change_log WHERE job_id = ? ORDER BY created_at ASC').all(jobId) as any[];
+      return rows.map(row => ({
+        id: row.id, jobId: row.job_id, assetKey: row.asset_key, changeType: row.change_type,
+        previous: row.previous_json ? JSON.parse(row.previous_json) : null,
+        current: JSON.parse(row.current_json || '{}'), createdAt: row.created_at
+      }));
+    } catch (error) { console.error('SQLite getPortfolioChanges error:', error); return []; }
   }
 
   public savePortfolioSnapshot(jobId: string, sourceUrl: string, summary: Record<string, any>) {
