@@ -24,7 +24,15 @@ function sendBrowserEvent(payload) {
 function safeHttpUrl(value) {
   try {
     const url = new URL(String(value || ''));
-    return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    const host = url.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.test')) return null;
+    if (net.isIP(host) === 4) {
+      const p = host.split('.').map(Number);
+      if (p[0] === 0 || p[0] === 10 || p[0] === 127 || (p[0] === 169 && p[1] === 254) || (p[0] === 172 && p[1] >= 16 && p[1] <= 31) || (p[0] === 192 && p[1] === 168) || (p[0] === 100 && p[1] >= 64 && p[1] <= 127) || p[0] >= 224) return null;
+    }
+    if (net.isIP(host) === 6 && (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd'))) return null;
+    return url.href;
   } catch { return null; }
 }
 
@@ -140,8 +148,8 @@ async function executeBrowserAction(action, args = {}) {
       return { pressed: key };
     }
     case 'type': {
-      const focused = await wc.executeJavaScript(`(() => { const e=document.activeElement; return !!e && (e.tagName==='INPUT' || e.tagName==='TEXTAREA' || e.isContentEditable) && !(e.tagName==='INPUT' && e.type==='password') && !e.closest('form')?.querySelector('input[type=password]'); })()`);
-      if (!focused) throw new Error('Typing is blocked unless a non-password text field is focused. Login credentials must be entered manually by the user.');
+      const focused = await wc.executeJavaScript(`(() => { const e=document.activeElement; if(!e || !(e.tagName==='INPUT' || e.tagName==='TEXTAREA' || e.isContentEditable)) return false; if(e.tagName==='INPUT' && e.type==='password') return false; if(e.closest('form')?.querySelector('input[type=password]')) return false; const s=[e.type,e.name,e.id,e.placeholder,e.getAttribute('aria-label'),e.getAttribute('role')].join(' ').toLowerCase(); return e.type==='search' || e.getAttribute('role')==='searchbox' || /search|query|keyword|\bq\b/.test(s); })()`);
+      if (!focused) throw new Error('Typing is restricted to visible search/query fields. Login, contact, payment and account forms must be handled manually.');
       if (args.clear === true) {
         wc.sendInputEvent({ type: 'keyDown', keyCode: 'Control' });
         wc.sendInputEvent({ type: 'keyDown', keyCode: 'A' });
