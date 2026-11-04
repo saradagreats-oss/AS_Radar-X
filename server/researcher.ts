@@ -1,66 +1,29 @@
 import crypto from 'node:crypto';
-import { RedditCollector } from './collectors/reddit.js';
-import { DiscordCollector } from './collectors/discord.js';
-import { runGeminiStrategicAnalyst, runGeminiWebResearch, buildReportWarningText } from './gemini/analyst.js';
-import { analyzeCommercialUse } from './analysis/commercialUse.js';
-import { analyzeLongevity } from './analysis/longevity.js';
-import { computeInternalPriorityScore } from './analysis/opportunityScore.js';
-import { analyzeRecurrence } from './analysis/recurrence.js';
-import { evaluateRiskAndRejections } from './analysis/riskFilter.js';
-import { analyzeSupplyAndGaps } from './analysis/supply.js';
-import { clusterEvidence } from './normalization/clustering.js';
-import { deduplicateEvidence } from './normalization/dedupe.js';
-import { normalizeEvidence } from './normalization/textNormalizer.js';
+import { runComputerUseResearch } from './agent/computerUseResearch.js';
+import { runGeminiStrategicAnalyst, buildReportWarningText } from './gemini/analyst.js';
+import { browserBridge } from './agent/browserBridge.js';
+import { normalizeResearchPages } from './normalization/researchKnowledge.js';
 import { storage } from './storage/database.js';
 import type {
-  ClusterAnalysis,
   CollectorStatus,
-  RawEvidence,
+  PortfolioSummary,
   ResearchJobState,
   ResearchReport,
-  ResearchStage
+  ResearchStage,
+  SourceEvidenceRecord,
+  WebResearchResult
 } from './types.js';
 
-const BASE_RESEARCH_DOMAINS = [
-  'commercial enterprise',
-  'video editing workflows',
-  'graphic design bottlenecks',
-  'modern healthcare b-roll',
-  'clean sustainable energy',
-  'logistics automation',
-  'fintech and security',
-  'blender and 3d assets',
-  'midjourney and ai creator workflows',
-  'motion graphics needs',
-  'authentic workplace collaboration'
-];
-
-function buildResearchTopics(userInstructions: string, pastHistory: Array<{ title: string; concept: string }>): string[] {
-  const instructionTerms = (userInstructions || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .split(/\s+/)
-    .filter((word) => word.length >= 5)
-    .slice(0, 10);
-
-  const historyTerms = pastHistory
-    .flatMap((item) => `${item.title} ${item.concept}`.split(/\s+/))
-    .map((word) => word.toLowerCase().replace(/[^a-z0-9-]/g, ''))
-    .filter((word) => word.length >= 6)
-    .slice(0, 8);
-
-  const seeds = [
-    ...BASE_RESEARCH_DOMAINS,
-    ...instructionTerms.map((term) => `${term} creator request`),
-    ...historyTerms.map((term) => `${term} alternative angle`)
-  ];
-  return Array.from(new Set(seeds)).slice(0, 12);
+export interface ResearchJobOptions {
+  niche?: string;
+  titleInstructions?: string;
+  tagCount?: number;
 }
 
 class ResearchCoordinator {
   private activeJobs = new Map<string, ResearchJobState>();
 
-  public createJob(photoCount: number, videoCount: number): string {
+  public createJob(photoCount: number, videoCount: number, options: ResearchJobOptions = {}): string {
     const safePhotos = Math.max(0, Math.min(10, Math.floor(photoCount)));
     const safeVideos = Math.max(0, Math.min(10, Math.floor(videoCount)));
     const jobId = `job_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -68,22 +31,22 @@ class ResearchCoordinator {
       jobId,
       status: 'RUNNING',
       stage: 'INITIALIZING',
-      progress: 5,
-      message: 'Initializing research engine...',
+      progress: 3,
+      message: 'Preparing autonomous research...',
       startedAt: Date.now()
     };
-
     this.activeJobs.set(jobId, state);
-    this.executePipeline(jobId, safePhotos, safeVideos).catch((err) => {
+    void this.executePipeline(jobId, safePhotos, safeVideos, options).catch((err: any) => {
       console.error(`Research pipeline error for job ${jobId}:`, err);
       const current = this.activeJobs.get(jobId);
       if (current) {
         current.status = 'FAILED';
+        current.stage = 'COMPLETE';
+        current.progress = 100;
         current.error = err?.message || 'Unknown research pipeline failure';
-        current.message = `Engine failed: ${current.error}`;
+        current.message = `Research failed: ${current.error}`;
       }
     });
-
     return jobId;
   }
 
@@ -97,7 +60,7 @@ class ResearchCoordinator {
       status: saved.status === 'FAILED' ? 'FAILED' : 'COMPLETED',
       stage: 'COMPLETE',
       progress: 100,
-      message: 'Report ready',
+      message: saved.status === 'INSUFFICIENT_EVIDENCE' ? 'Research completed with insufficient evidence.' : 'Report ready',
       startedAt: new Date(saved.created_at).getTime(),
       report: saved
     };
@@ -105,367 +68,346 @@ class ResearchCoordinator {
 
   private updateStage(jobId: string, stage: ResearchStage, progress: number, message: string) {
     const job = this.activeJobs.get(jobId);
-    if (job) {
-      job.stage = stage;
-      job.progress = progress;
-      job.message = message;
-    }
+    if (!job) return;
+    job.stage = stage;
+    job.progress = Math.max(0, Math.min(100, progress));
+    job.message = message;
+    storage.appendResearchEvent({
+      id: crypto.randomUUID(),
+      jobId,
+      at: new Date().toISOString(),
+      type: 'stage',
+      message,
+      details: { stage, progress }
+    });
   }
 
-  private async executePipeline(jobId: string, photoCount: number, videoCount: number) {
-    const startTime = Date.now();
-    const warnings: string[] = [];
+  private buildSourceEvidence(jobId: string): { pages: any[]; sources: SourceEvidenceRecord[] } {
+    const events = storage.getResearchEvents(jobId);
+    const pageEvents = events.filter((event: any) => event.type === 'page_visited');
+    const seen = new Set<string>();
+    const pages = pageEvents.filter((event: any) => {
+      const url = String(event.url || event.details?.url || '');
+      if (!url || seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
+    const sources: SourceEvidenceRecord[] = pages.map((event: any, index: number) => {
+      let sourceFamily = 'website';
+      try { sourceFamily = new URL(String(event.url || '')).hostname.replace(/^www\./, ''); } catch { /* keep default */ }
+      return {
+        id: index + 1,
+        title: String(event.message || event.details?.title || event.url || `Source ${index + 1}`).slice(0, 220),
+        url: String(event.url || event.details?.url || ''),
+        source_family: sourceFamily,
+        observation: String(event.details?.text || '').slice(0, 1200)
+      };
+    });
+    return { pages, sources };
+  }
 
-    this.updateStage(jobId, 'INITIALIZING', 8, 'Loading settings, community lists, rejection memory, and platform toggles...');
+  private buildMemoryContext(pastHistory: Array<{ title: string; concept: string }>, rejectedItems: string[], knowledge: Array<Record<string, any>>, portfolioSnapshot: any): string {
+    const opportunities = pastHistory.slice(0, 120).map((item, index) => String(index + 1) + '. ' + item.title + ' | ' + (item.concept || '')).join('\n');
+    const priorPages = knowledge.slice(0, 80).map((item: any) => {
+      const keywords = Array.isArray(item.keywords) ? item.keywords.slice(0, 16).join(', ') : '';
+      return '- ' + item.title + ' | ' + item.sourceFamily + ' | category=' + item.category + ' | seen=' + (item.seenCount || 1) + ' | terms=' + keywords + ' | url=' + item.canonicalUrl;
+    }).join('\n');
+    return [
+      'PREVIOUS OPPORTUNITIES (avoid exact and near repeats; not current market evidence):',
+      opportunities || 'None recorded.',
+      '',
+      'USER REJECTIONS (strict negative constraints):',
+      rejectedItems.map(item => '- ' + item).join('\n') || 'None supplied.',
+      '',
+      'PREVIOUSLY NORMALIZED RESEARCH KNOWLEDGE (deduplication and discovery memory only; not proof of current demand):',
+      priorPages || 'No normalized pages recorded yet.',
+      '',
+      'PREVIOUS ADOBE PORTFOLIO SNAPSHOT (duplicate/status reference only; re-check the live portfolio):',
+      JSON.stringify(portfolioSnapshot?.summary || null)
+    ].join('\n');
+  }
+  private buildResearchMemo(agentMemo: string, pages: any[], sources: SourceEvidenceRecord[]): string {
+    const observations = pages.slice(0, 45).map((event: any, index: number) => {
+      const detail = event.details || {};
+      return [
+        `EVIDENCE SOURCE ID: ${index + 1}`,
+        `TITLE: ${event.message || ''}`,
+        `URL: ${event.url || ''}`,
+        `VISIBLE PAGE TEXT: ${String(detail.text || '').slice(0, 2200)}`,
+        `HEADINGS: ${(detail.headings || []).slice(0, 12).join(' | ')}`
+      ].join('\n');
+    }).join('\n\n');
+    return [
+      'GEMINI COMPUTER-USE RESEARCH DIRECTOR MEMO:',
+      (agentMemo || 'The browsing agent did not return a written summary. Use the independently captured page observations below.').slice(0, 30000),
+      '',
+      'INDEPENDENTLY RECORDED BROWSER OBSERVATIONS:',
+      observations,
+      '',
+      'SOURCE INDEX:',
+      JSON.stringify(sources, null, 2)
+    ].join('\n');
+  }
+
+  private async executePipeline(jobId: string, photoCount: number, videoCount: number, options: ResearchJobOptions) {
+    const started = Date.now();
+    const warnings: string[] = [];
     const userInstructions = storage.getInstructions();
     const rejectedItems = storage.getRejectedContent();
-    const pastHistory = storage.getRecentOpportunityHistory(35);
-    const isPlatformDataEnabled = storage.getPlatformDataEnabled();
+    const pastHistory = storage.getRecentOpportunityHistory(120);
     const pdfDoc = storage.getPdfDocument();
+    const tagCount = Math.max(1, Math.min(50, Math.floor(Number(options.tagCount) || 25)));
+    const titleInstructions = String(options.titleInstructions || '').trim();
+    const niche = String(options.niche || '').trim() ||
+      'Discover the strongest evidence-backed, durable commercial stock photo and video opportunities across all relevant industries. Choose the research direction autonomously from current evidence and portfolio gaps.';
 
-    // Keep the existing research-topic seeds for Reddit/Discord mode.
-    // Gemini-only mode must not inherit the hardcoded topic taxonomy.
-    const researchTopics = isPlatformDataEnabled
-      ? buildResearchTopics(userInstructions, pastHistory)
-      : [];
+    const previousPortfolio = storage.getLatestPortfolioSnapshot();
+    const priorKnowledge = storage.getRecentNormalizedResearchEvidence(100);
+    const memoryContext = this.buildMemoryContext(pastHistory, rejectedItems, priorKnowledge, previousPortfolio);
+    let agentResult: any = null;
+    let evidenceSources: SourceEvidenceRecord[] = [];
+    let portfolioSummary: PortfolioSummary | null = null;
+    let webResearch: WebResearchResult | undefined;
 
-    let rawEvidence: RawEvidence[] = [];
-    const sourceStatus: Record<string, CollectorStatus> = {};
+    try {
+      this.updateStage(jobId, 'PLANNING', 7, 'Gemini is planning the portfolio audit and live market research.');
+      if (pdfDoc) {
+        this.updateStage(jobId, 'PDF_ANALYSIS', 9, `Loading user reference document: ${pdfDoc.fileName}`);
+      }
 
-    if (pdfDoc) {
-      this.updateStage(
+      agentResult = await runComputerUseResearch({
         jobId,
-        'PDF_ANALYSIS',
-        14,
-        `Analyzing attached reference PDF "${pdfDoc.fileName}" and specific user directives...`
-      );
-    }
+        niche,
+        instructions: userInstructions + (pdfDoc?.instructions ? `\nPDF REFERENCE DIRECTIVES: ${pdfDoc.instructions}` : ''),
+        photoCount,
+        videoCount,
+        model: 'gemini-3.8-flash',
+        maxTurns: 55,
+        memoryContext,
+        onProgress: (stage, progress, message) => {
+          this.updateStage(jobId, stage as ResearchStage, progress, message);
+        },
+        onHandoff: (message) => this.updateStage(jobId, 'PAUSED_FOR_USER', this.activeJobs.get(jobId)?.progress || 30, message),
+        onResume: () => this.updateStage(jobId, 'BROWSER_RESEARCH', this.activeJobs.get(jobId)?.progress || 35, 'Human verification completed. Gemini is resuming research.')
+      });
 
-    if (isPlatformDataEnabled) {
-      this.updateStage(
-        jobId,
-        'COLLECTING',
-        22,
-        'Collecting live creator discussions, requests, and complaints from Reddit & Discord...'
-      );
-
-      const redditCollector = new RedditCollector();
-      const discordCollector = new DiscordCollector();
-
-      const [redditResults, discordResults] = await Promise.all([
-        redditCollector.collect(researchTopics),
-        discordCollector.collect(researchTopics)
-      ]);
-
-      const allResults = [...redditResults, ...discordResults];
-
-      sourceStatus['Reddit'] = redditResults.some((r) => r.status === 'AVAILABLE')
-        ? 'AVAILABLE'
-        : (redditResults.find((r) => r.status !== 'EMPTY')?.status || 'EMPTY');
-
-      sourceStatus['Discord'] = discordResults.some((r) => r.status === 'AVAILABLE')
-        ? 'AVAILABLE'
-        : (discordResults.find((r) => r.status !== 'EMPTY')?.status || 'EMPTY');
-
-      for (const res of allResults) {
-        if (res.status !== 'AVAILABLE') {
-          warnings.push(
-            `${res.sourceName} / ${res.subSource}: ${res.status}${res.notes ? ` — ${res.notes}` : ''}`
-          );
+      await browserBridge.hide().catch(() => undefined);
+      this.updateStage(jobId, 'PORTFOLIO_SYNC', 81, 'Comparing the latest visible Adobe portfolio data with previous snapshots.');
+      const latestPortfolio = storage.getLatestPortfolioSnapshot(jobId);
+      if (latestPortfolio?.summary) {
+        const p: any = latestPortfolio.summary;
+        const old: any = previousPortfolio?.summary || {};
+        const syncedAssets = storage.getPortfolioAssetsForJob(jobId).length;
+        const changedAssets = storage.getPortfolioChanges(jobId).length;
+        portfolioSummary = {
+          rowCount: Number(p.rowCount) || 0,
+          accepted: p.accepted ?? null,
+          rejected: p.rejected ?? null,
+          pending: p.pending ?? null,
+          totalDownloads: p.totalDownloads ?? null,
+          changedAssets,
+          syncedAssets,
+          sourceUrl: latestPortfolio.sourceUrl,
+          capturedAt: latestPortfolio.capturedAt
+        };
+        const deltas = [
+          p.accepted != null && old.accepted != null ? `accepted ${Number(p.accepted) - Number(old.accepted) >= 0 ? '+' : ''}${Number(p.accepted) - Number(old.accepted)}` : '',
+          p.rejected != null && old.rejected != null ? `rejected ${Number(p.rejected) - Number(old.rejected) >= 0 ? '+' : ''}${Number(p.rejected) - Number(old.rejected)}` : '',
+          p.totalDownloads != null && old.totalDownloads != null ? `downloads ${Number(p.totalDownloads) - Number(old.totalDownloads) >= 0 ? '+' : ''}${Number(p.totalDownloads) - Number(old.totalDownloads)}` : ''
+        ].filter(Boolean);
+        storage.appendResearchEvent({
+          id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type: 'portfolio_delta',
+          message: deltas.length ? `Portfolio changes since previous snapshot: ${deltas.join(', ')}` : 'Latest portfolio snapshot saved. Previous comparable totals were not available.',
+          url: latestPortfolio.sourceUrl,
+          details: { changedAssets, syncedAssets, changes: storage.getPortfolioChanges(jobId), deltas, current: portfolioSummary, previous: old }
+        });
+      } else {
+        warnings.push('Adobe Contributor portfolio could not be read in this run. Previous locally stored portfolio data has been retained; no new status or download figures were guessed.');
+        const old: any = previousPortfolio?.summary || {};
+        if (previousPortfolio) {
+          portfolioSummary = {
+            rowCount: Number(old.rowCount) || 0, accepted: old.accepted ?? null, rejected: old.rejected ?? null,
+            pending: old.pending ?? null, totalDownloads: old.totalDownloads ?? null, changedAssets: 0,
+            sourceUrl: previousPortfolio.sourceUrl, capturedAt: previousPortfolio.capturedAt
+          };
         }
       }
 
-      rawEvidence = allResults.flatMap((r) => r.evidence || []);
-    } else {
-      this.updateStage(
-        jobId,
-        'COLLECTING',
-        25,
-        'Platform Data disabled by user. Operating in pure Gemini AI Intelligence + Historical Data mode...'
-      );
-
-      sourceStatus['Reddit'] = 'DISABLED';
-      sourceStatus['Discord'] = 'DISABLED';
-      sourceStatus['AI Intelligence'] = 'AVAILABLE';
-
-      warnings.push(
-        'Platform Data (Reddit/Discord) was disabled in Settings. Opportunities were synthesized via Gemini Strategic Intelligence and historical demand data.'
-      );
-    }
-
-    storage.saveRawEvidence(jobId, rawEvidence);
-
-    this.updateStage(
-      jobId,
-      'NORMALIZING',
-      35,
-      `Normalizing ${rawEvidence.length} conversation evidence records...`
-    );
-
-    const normalized = rawEvidence.map(normalizeEvidence);
-
-    this.updateStage(
-      jobId,
-      'DEDUPLICATING',
-      44,
-      'Removing duplicate discussion signals...'
-    );
-
-    const deduplicated = deduplicateEvidence(normalized);
-
-    this.updateStage(
-      jobId,
-      'CLUSTERING',
-      52,
-      'Clustering recurring human discussion needs, asset requests, and complaints...'
-    );
-
-    const clusters = clusterEvidence(deduplicated);
-
-    this.updateStage(
-      jobId,
-      'DEMAND_ANALYSIS',
-      62,
-      'Analyzing human demand recurrence across communities...'
-    );
-
-    this.updateStage(
-      jobId,
-      'SUPPLY_GAP',
-      68,
-      'Measuring creator-reported asset shortages and differentiation gaps...'
-    );
-
-    this.updateStage(
-      jobId,
-      'COMMERCIAL_USE',
-      74,
-      'Mapping commercial brand and editorial buyer use cases...'
-    );
-
-    this.updateStage(
-      jobId,
-      'LONGEVITY',
-      80,
-      'Assessing multi-year evergreen viability vs short-lived fads...'
-    );
-
-    this.updateStage(
-      jobId,
-      'SCORING',
-      85,
-      'Calculating transparent internal opportunity priority score...'
-    );
-
-    const clusterAnalyses: ClusterAnalysis[] = clusters.map((cluster) => {
-      const recurrence = analyzeRecurrence(cluster);
-      const commercialUse = analyzeCommercialUse(cluster);
-      const longevity = analyzeLongevity(cluster);
-      const supply = analyzeSupplyAndGaps(cluster);
-      const score = computeInternalPriorityScore(
-        cluster,
-        supply,
-        commercialUse,
-        longevity
-      );
-
-      return {
-        cluster,
-        recurrence,
-        commercialUse,
-        longevity,
-        supply,
-        score
-      };
-    });
-
-    const deterministicCandidates = clusterAnalyses.filter((analysis) => {
-      const text = `${analysis.cluster.name} ${analysis.cluster.primary_keywords.join(' ')}`;
-      return !evaluateRiskAndRejections(text, rejectedItems).rejected;
-    });
-
-    let webResearch = undefined;
-
-    try {
-      this.updateStage(
-        jobId,
-        'SCORING',
-        88,
-        'Executing grounded web-research pass for broader creator community discussions...'
-      );
-
-      webResearch = await runGeminiWebResearch({
-        clusters: deterministicCandidates.slice(0, 10).map((a) => a.cluster),
-        rawEvidence: rawEvidence.slice(0, 80),
-        sourceStatuses: sourceStatus,
-        requestedPhotoCount: photoCount,
-        requestedVideoCount: videoCount,
-        researchTopics,
-        userCustomInstructions: userInstructions,
-        rejectedContentList: rejectedItems,
-        pastOpportunitiesHistory: pastHistory,
-        isPlatformDataEnabled,
-        pdfDoc
+      this.updateStage(jobId, 'NORMALIZING', 84, 'Deduplicating captured pages and normalizing source evidence.');
+      const built = this.buildSourceEvidence(jobId);
+      evidenceSources = built.sources;
+      const normalizedRecords = normalizeResearchPages(built.pages, jobId);
+      storage.saveNormalizedResearchEvidence(jobId, normalizedRecords);
+      storage.appendResearchEvent({
+        id: crypto.randomUUID(), jobId, at: new Date().toISOString(),
+        type: 'normalized_evidence_saved',
+        message: 'Browser observations were normalized, fingerprinted and stored for future deduplication.',
+        details: { rawPages: built.pages.length, normalizedRecords: normalizedRecords.length, priorKnowledgeRecords: priorKnowledge.length, totalStoredObservationVersions: storage.getNormalizedEvidenceObservationCount(jobId) }
       });
-
-      if (webResearch.sources.length === 0) {
-        warnings.push(
-          'Gemini web-research pass returned no grounded external sources.'
-        );
+      if (evidenceSources.length < 3) {
+        warnings.push(`Only ${evidenceSources.length} unique source pages were captured. Treat confidence conservatively; the final analyst will not invent missing market evidence.`);
       }
-    } catch (err: any) {
-      warnings.push(`Grounded web research pass unavailable: ${err.message}`);
-    }
+      if (agentResult?.turnLimitReached) {
+        warnings.push('The browser agent reached its action limit. Captured evidence was preserved, but the source coverage may be incomplete.');
+      }
 
-    this.updateStage(
-      jobId,
-      'PREPARING_PHOTOS',
-      92,
-      'Formulating differentiated photo opportunities with unified SEO titles, micro-texture prompts, and 25 SEO tags...'
-    );
+      const observations = built.pages.map((event: any, index: number) => ({
+        topic: String(event.message || `Source ${index + 1}`),
+        observed_fact: String(event.details?.text || '').slice(0, 1000),
+        commercial_signal: '',
+        supply_or_differentiation_signal: '',
+        inference: ''
+      }));
+      const researchMemo = this.buildResearchMemo(agentResult?.finalText || '', built.pages, evidenceSources) + '\n\nHISTORICAL DEDUPLICATION MEMORY (not current evidence):\n' + memoryContext.slice(0, 18000);
+      webResearch = {
+        summary: agentResult?.finalText || 'Computer-use research finished without a narrative memo. The captured source observations remain available.',
+        findings: observations.slice(0, 40),
+        sources: evidenceSources.map(source => ({ id: source.id, title: source.title, url: source.url })),
+        search_queries: []
+      };
 
-    this.updateStage(
-      jobId,
-      'PREPARING_VIDEOS',
-      96,
-      'Formulating cinematic video opportunities with unified SEO titles, motion-rich prompts, and 25 SEO tags...'
-    );
+      const status: Record<string, CollectorStatus> = {
+        'Gemini Computer Use': agentResult?.model ? 'AVAILABLE' : 'ERROR',
+        'Visible stock and commercial web pages': evidenceSources.length ? 'AVAILABLE' : 'EMPTY',
+        'Adobe Contributor portfolio': latestPortfolio && Number((latestPortfolio.summary as any)?.rowCount || 0) > 0 ? 'AVAILABLE' : 'UNAVAILABLE'
+      };
+      const sourceNames = Array.from(new Set(evidenceSources.map(source => source.source_family || 'Public web')));
+      if (latestPortfolio) sourceNames.push('Adobe Contributor Portfolio');
 
-    let analystOutput;
-
-    try {
-      analystOutput = await runGeminiStrategicAnalyst({
-        clusters: deterministicCandidates.slice(0, 12).map((a) => a.cluster),
-        clusterAnalyses: deterministicCandidates.slice(0, 12),
-        rawEvidence,
-        sourceStatuses: sourceStatus,
+      this.updateStage(jobId, 'FINAL_ANALYSIS', 87, 'The final analyst is synthesizing evidence, checking portfolio conflicts and scoring each candidate.');
+      const analystOutput = await runGeminiStrategicAnalyst({
+        clusters: [],
+        clusterAnalyses: [],
+        rawEvidence: [],
+        sourceStatuses: status,
         requestedPhotoCount: photoCount,
         requestedVideoCount: videoCount,
         userCustomInstructions: userInstructions,
         rejectedContentList: rejectedItems,
         pastOpportunitiesHistory: pastHistory,
         webResearch,
-        isPlatformDataEnabled,
-        pdfDoc
+        pdfDoc,
+        tagCount,
+        titleInstructions,
+        researchMemo,
+        evidenceSources,
+        portfolioSummary
       });
-    } catch (err: any) {
-      const elapsedSeconds = Math.max(
-        1,
-        Math.round((Date.now() - startTime) / 1000)
-      );
 
+      const photos = analystOutput.photos || [];
+      const videos = analystOutput.videos || [];
+      const scoreValues = [...photos, ...videos].map(item => item.score?.score).filter((value): value is number => Number.isFinite(value));
+      const scoreSummary = {
+        average: scoreValues.length ? Math.round(scoreValues.reduce((sum, value) => sum + value, 0) / scoreValues.length) : 0,
+        highest: scoreValues.length ? Math.max(...scoreValues) : 0,
+        scored: scoreValues.length,
+        formula: 'Demand 25% + Commercial use 20% + Marketplace evidence 20% + Supply/angle gap 15% + Longevity 10% + Production feasibility 10%'
+      };
+      if (photos.length < photoCount || videos.length < videoCount) {
+        warnings.push('Some requested opportunities were withheld because the evidence, differentiation or anti-duplicate checks did not support enough unique candidates.');
+      }
+      if ([...photos, ...videos].some(item => item.score?.confidence === 'LOW')) {
+        warnings.push('At least one opportunity has LOW evidence confidence. Review the source references and score breakdown before producing the asset.');
+      }
+
+      const validationWarnings = buildReportWarningText({
+        requestedPhotoCount: photoCount,
+        requestedVideoCount: videoCount,
+        photos,
+        videos,
+        sourceStatuses: status
+      }).map(warning => warning.replace(/human discussion evidence/gi, 'collected market evidence'));
+
+      const elapsed = Math.max(1, Math.round((Date.now() - started) / 1000));
+      const report: ResearchReport = {
+        id: jobId,
+        job_id: jobId,
+        date: new Date().toISOString().slice(0, 10),
+        created_at: new Date().toISOString(),
+        duration: `${elapsed}s`,
+        status: photos.length || videos.length ? 'COMPLETED' : 'INSUFFICIENT_EVIDENCE',
+        sources_processed: sourceNames,
+        source_status: status,
+        evidence_summary: analystOutput.evidence_summary || webResearch.summary,
+        warnings: [...new Set([...warnings, ...(analystOutput.warnings || []), ...validationWarnings])],
+        photo_count_requested: photoCount,
+        video_count_requested: videoCount,
+        photos,
+        videos,
+        internal_score_explanation: scoreSummary.formula,
+        score_summary: scoreSummary,
+        portfolio_summary: portfolioSummary,
+        browser_research: {
+          pages: Number(agentResult?.pages) || evidenceSources.length,
+          actions: Number(agentResult?.actions) || 0,
+          screenshots: Number(agentResult?.screenshots) || 0,
+          model: String(agentResult?.model || 'unknown'),
+          turn_limit_reached: !!agentResult?.turnLimitReached
+        },
+        evidence_sources: evidenceSources,
+        analysis_stats: {
+          raw_evidence_count: built.pages.length,
+          deduplicated_evidence_count: normalizedRecords.length,
+          cluster_count: normalizedRecords.length,
+          evidence_backed_candidate_count: photos.length + videos.length,
+          rejected_candidate_count: Math.max(0, photoCount + videoCount - photos.length - videos.length)
+        },
+        web_research: webResearch
+      };
+      storage.saveReport(report);
+      const job = this.activeJobs.get(jobId);
+      if (job) {
+        job.status = 'COMPLETED';
+        job.stage = 'COMPLETE';
+        job.progress = 100;
+        job.message = report.status === 'COMPLETED' ? 'Evidence-backed report is ready.' : 'Research completed; there was not enough evidence for a reliable opportunity set.';
+        job.report = report;
+      }
+      storage.appendResearchEvent({
+        id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type: 'report_complete',
+        message: 'Research report saved with score breakdown, portfolio snapshot and source evidence.',
+        details: { status: report.status, photos: photos.length, videos: videos.length, scoreSummary, portfolioSummary }
+      });
+    } catch (error: any) {
+      await browserBridge.hide().catch(() => undefined);
+      const elapsed = Math.max(1, Math.round((Date.now() - started) / 1000));
+      const built = this.buildSourceEvidence(jobId);
       const failedReport: ResearchReport = {
         id: jobId,
         job_id: jobId,
-        date: new Date().toISOString().split('T')[0],
+        date: new Date().toISOString().slice(0, 10),
         created_at: new Date().toISOString(),
-        duration: `${elapsedSeconds}s`,
+        duration: `${elapsed}s`,
         status: 'FAILED',
-        sources_processed: Object.keys(sourceStatus),
-        source_status: sourceStatus,
-        evidence_summary:
-          'Gemini strategic analysis could not complete. Raw conversation evidence was safely preserved in SQLite.',
-        warnings: [
-          ...warnings,
-          `Gemini analysis error: ${err.message}`
-        ],
+        sources_processed: built.sources.map(source => source.source_family || 'Public web'),
+        source_status: { 'Gemini Computer Use': 'ERROR' },
+        evidence_summary: 'The research agent did not complete the final report. Any browser observations and event logs collected before the error remain stored locally for review.',
+        warnings: [...warnings, error?.message || String(error)],
         photo_count_requested: photoCount,
         video_count_requested: videoCount,
         photos: [],
         videos: [],
+        evidence_sources: built.sources,
+        browser_research: {
+          pages: built.pages.length, actions: Number(agentResult?.actions) || 0,
+          screenshots: Number(agentResult?.screenshots) || 0, model: String(agentResult?.model || 'unknown')
+        },
         analysis_stats: {
-          raw_evidence_count: rawEvidence.length,
-          deduplicated_evidence_count: deduplicated.length,
-          cluster_count: clusters.length,
-          evidence_backed_candidate_count: deterministicCandidates.length,
-          rejected_candidate_count: Math.max(
-            0,
-            clusters.length - deterministicCandidates.length
-          )
+          raw_evidence_count: built.sources.length, deduplicated_evidence_count: built.sources.length,
+          cluster_count: built.sources.length, evidence_backed_candidate_count: 0, rejected_candidate_count: 0
         },
         web_research: webResearch
       };
-
       storage.saveReport(failedReport);
-
-      const current = this.activeJobs.get(jobId);
-
-      if (current) {
-        current.status = 'FAILED';
-        current.stage = 'COMPLETE';
-        current.progress = 100;
-        current.message = 'Research ended with Gemini analysis failure.';
-        current.error = err.message;
-        current.report = failedReport;
+      const job = this.activeJobs.get(jobId);
+      if (job) {
+        job.status = 'FAILED';
+        job.stage = 'COMPLETE';
+        job.progress = 100;
+        job.message = 'Research ended with an error. Captured evidence was preserved.';
+        job.error = error?.message || String(error);
+        job.report = failedReport;
       }
-
-      return;
-    }
-
-    const validationWarnings = buildReportWarningText({
-      requestedPhotoCount: photoCount,
-      requestedVideoCount: videoCount,
-      photos: analystOutput.photos,
-      videos: analystOutput.videos,
-      sourceStatuses: sourceStatus
-    });
-
-    const elapsedSeconds = Math.max(
-      1,
-      Math.round((Date.now() - startTime) / 1000)
-    );
-
-    const report: ResearchReport = {
-      id: jobId,
-      job_id: jobId,
-      date: new Date().toISOString().split('T')[0],
-      created_at: new Date().toISOString(),
-      duration: `${elapsedSeconds}s`,
-      status:
-        analystOutput.photos.length || analystOutput.videos.length
-          ? 'COMPLETED'
-          : 'INSUFFICIENT_EVIDENCE',
-      sources_processed: Object.keys(sourceStatus),
-      source_status: sourceStatus,
-      evidence_summary: analystOutput.evidence_summary,
-      warnings: Array.from(
-        new Set([
-          ...warnings,
-          ...(analystOutput.warnings || []),
-          ...validationWarnings
-        ])
-      ),
-      photo_count_requested: photoCount,
-      video_count_requested: videoCount,
-      photos: analystOutput.photos,
-      videos: analystOutput.videos,
-      internal_score_explanation: deterministicCandidates[0]?.score.explanation,
-      analysis_stats: {
-        raw_evidence_count: rawEvidence.length,
-        deduplicated_evidence_count: deduplicated.length,
-        cluster_count: clusters.length,
-        evidence_backed_candidate_count: deterministicCandidates.length,
-        rejected_candidate_count: Math.max(
-          0,
-          clusters.length - deterministicCandidates.length
-        )
-      },
-      web_research: webResearch
-    };
-
-    storage.saveReport(report);
-
-    const current = this.activeJobs.get(jobId);
-
-    if (current) {
-      current.status = 'COMPLETED';
-      current.stage = 'COMPLETE';
-      current.progress = 100;
-      current.message =
-        report.status === 'COMPLETED'
-          ? 'Report ready'
-          : 'Insufficient evidence for a complete report';
-      current.report = report;
     }
   }
 }

@@ -6,3 +6,11 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Local runtime data, contributor portfolio records and browser-session captures
+/data/
+/release/
+/research-browser/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

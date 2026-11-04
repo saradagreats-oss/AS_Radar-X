@@ -26,7 +26,10 @@ jobs:
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Run research engine tests
+      - name: TypeScript validation
+        run: npx tsc --noEmit
+
+      - name: Run autonomous research engine tests
         run: npx tsx server/__tests__/research_engine.test.ts
 
       - name: Build and package Windows app

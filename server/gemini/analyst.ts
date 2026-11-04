@@ -10,8 +10,9 @@ import type {
   ResearchReport,
   VideoOpportunity,
   WebResearchResult,
-  WebResearchSource
+  SourceEvidenceRecord
 } from '../types.js';
+import { calculateOpportunityScore } from '../analysis/evidenceScore.js';
 import { evaluateRiskAndRejections } from '../analysis/riskFilter.js';
 import { checkHistoryProtection } from '../analysis/historyProtection.js';
 import { calculateJaccardSimilarity } from '../normalization/dedupe.js';
@@ -28,33 +29,19 @@ interface AnalystInput {
   rejectedContentList?: string[];
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   webResearch?: WebResearchResult;
-  isPlatformDataEnabled?: boolean;
   pdfDoc?: PdfDocumentConfig | null;
+  tagCount?: number;
+  titleInstructions?: string;
+  researchMemo?: string;
+  evidenceSources?: SourceEvidenceRecord[];
+  portfolioSummary?: Record<string, any> | null;
 }
 
-interface GroundedResearchInput {
-  clusters: ConceptCluster[];
-  rawEvidence: RawEvidence[];
-  sourceStatuses: Record<string, string>;
-  requestedPhotoCount: number;
-  requestedVideoCount: number;
-  userCustomInstructions?: string;
-  rejectedContentList?: string[];
-  researchTopics?: string[];
-  pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
-  isPlatformDataEnabled?: boolean;
-  pdfDoc?: PdfDocumentConfig | null;
-}
-
-interface GeminiWebResearchOutput {
-  summary: string;
-  findings: Array<{
-    topic: string;
-    observed_fact: string;
-    commercial_signal: string;
-    supply_or_differentiation_signal: string;
-    inference: string;
-  }>;
+interface GeminiModelOutput {
+  evidence_summary: string;
+  warnings?: string[];
+  photos: Array<Record<string, any>>;
+  videos: Array<Record<string, any>>;
 }
 
 interface GeminiAnalystOutput {
@@ -91,253 +78,28 @@ async function candidateModels(): Promise<string[]> {
   return [...new Set([...preferredOrder, ...fallback].filter((model): model is string => !!model))];
 }
 
-function sourceStatusText(sourceStatuses: Record<string, string>): string {
-  return Object.entries(sourceStatuses)
-    .map(([source, status]) => `${source}: ${status}`)
-    .join('\n');
-}
-
-function extractGroundedSources(response: any): WebResearchSource[] {
-  const chunks = response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  const seen = new Set<string>();
-  const sources: WebResearchSource[] = [];
-
-  for (const chunk of chunks) {
-    const web = chunk?.web;
-    const url = web?.uri;
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    sources.push({
-      id: sources.length + 1,
-      title: String(web?.title || url),
-      url: String(url)
-    });
-  }
-
-  return sources;
-}
-
-/**
- * Normalizes tags so that exactly 25 clean, deduplicated keywords are returned,
- * ensuring the first 10 tags are the highest-relevance SEO tags.
- */
-function normalizeTags25(rawTags: string[] = [], title: string = '', prompt: string = ''): string[] {
+/** Keep only relevant, distinct tags; never pad with unrelated generic stock terms. */
+function normalizeTags(rawTags: string[] = [], title = '', prompt = '', requestedCount = 25): string[] {
+  const limit = Math.max(1, Math.min(50, Math.floor(requestedCount) || 25));
   const cleaned: string[] = [];
   const seen = new Set<string>();
-
-  for (const t of rawTags) {
-    const norm = String(t || '')
+  const add = (value: unknown) => {
+    const norm = String(value || '')
       .replace(/^[#\d.-]+/, '')
       .replace(/[^a-zA-Z0-9\s-]/g, ' ')
+      .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase();
-    if (norm && norm.length >= 2 && !seen.has(norm)) {
+    if (norm && norm.length >= 2 && !seen.has(norm) && cleaned.length < limit) {
       seen.add(norm);
       cleaned.push(norm);
     }
-    if (cleaned.length === 25) break;
-  }
-
-  // If fewer than 25, extract meaningful terms from title and prompt
-  if (cleaned.length < 25) {
-    const tokens = extractTokens(`${title} ${prompt}`);
-    for (const token of tokens) {
-      const norm = token.toLowerCase();
-      if (norm.length >= 3 && !seen.has(norm)) {
-        seen.add(norm);
-        cleaned.push(norm);
-      }
-      if (cleaned.length === 25) break;
-    }
-  }
-
-  // Fallback high-commercial general stock terms if still under 25
-  const fallbackCommercial = [
-    'commercial photography',
-    'authentic concept',
-    'high resolution',
-    'copy space',
-    'modern visual',
-    'commercial b-roll',
-    'creative content',
-    'visual storytelling',
-    'contemporary style',
-    'professional quality',
-    'natural lighting',
-    'editorial footage',
-    'commercial marketing',
-    'digital asset',
-    'studio quality',
-    'clean composition',
-    'no people',
-    'tactile texture',
-    'organic tone',
-    'high production',
-    'industry standard',
-    'cinematic quality',
-    'commercial licensing',
-    'content creator',
-    'stock library'
-  ];
-
-  for (const fb of fallbackCommercial) {
-    if (cleaned.length >= 25) break;
-    if (!seen.has(fb)) {
-      seen.add(fb);
-      cleaned.push(fb);
-    }
-  }
-
-  return cleaned.slice(0, 25);
-}
-
-export async function runGeminiWebResearch(input: GroundedResearchInput): Promise<WebResearchResult> {
-  const ai = getClient();
-  const pdfDoc = input.pdfDoc || storage.getPdfDocument();
-
-  const sourceHints =
-    input.isPlatformDataEnabled === false
-      ? []
-      : [
-          'site:reddit.com/r/StockPhotography',
-          'site:reddit.com/r/AdobeStock',
-          'site:reddit.com/r/graphic_design',
-          'site:reddit.com/r/VideoEditing',
-          'site:reddit.com/r/editors'
-        ];
-
-  const concepts = input.clusters.slice(0, 10).map((cluster) => ({
-    name: cluster.name,
-    keywords: cluster.primary_keywords,
-    sources: cluster.sources_observed,
-    evidence_count: cluster.evidence_count,
-    recurrence: cluster.recurrence_level
-  }));
-
-  const modeIsGeminiOnly = input.isPlatformDataEnabled === false;
-
-  const pdfContextText = pdfDoc?.base64Data
-    ? `\nATTACHED REFERENCE PDF DOCUMENT: "${pdfDoc.fileName}" (${Math.round(pdfDoc.fileSize / 1024)} KB)
-PDF DIRECTIVES & SPECIFIC INSTRUCTIONS FROM USER:
-${pdfDoc.instructions || 'Examine all visual pages, imagery, layouts, and data points inside this PDF document to extract actionable stock market gaps and creator visual needs.'}
-`
-    : '';
-
-  const promptText = `Perform market intelligence web research for AS-Radar-X stock content intelligence.
-
-RESEARCH MODE:
-${modeIsGeminiOnly ? 'GEMINI-ONLY AUTONOMOUS RESEARCH' : 'PLATFORM DATA + GEMINI'}
-${pdfContextText}
-
-${
-  modeIsGeminiOnly
-    ? `AUTONOMY RULES FOR GEMINI-ONLY MODE:
-- Do NOT use or infer any predefined niche list, fixed industry list, or hardcoded research-question list.
-- Choose research queries and sources yourself from the user's explicit instructions, attached PDF document, and saved history.
-- Distinguish verified external web facts from inference.
-- Never invent fake download or sales counts, rankings, or percentages.`
-    : `PLATFORM-DATA MODE:
-- Use the collected Reddit/Discord evidence as the primary human-demand signal.
-- The optional community hints below are starting points, not proof of demand.
-- Distinguish observed statements from strategic inference.`
-}
-
-SOURCE STATUS:
-${sourceStatusText(input.sourceStatuses)}
-
-CURRENT DISCUSSION CLUSTERS:
-${JSON.stringify(concepts, null, 2)}
-
-RESEARCH TARGET TOPICS:
-${JSON.stringify(input.researchTopics || [], null, 2)}
-
-PAST OPPORTUNITY HISTORY (Exclusion Memory):
-${JSON.stringify((input.pastOpportunitiesHistory || []).slice(0, 30), null, 2)}
-
-USER INSTRUCTIONS:
-${input.userCustomInstructions || 'None'}
-
-USER REJECTIONS:
-${(input.rejectedContentList || []).join('\n') || 'None'}
-`;
-
-  const responseSchema = {
-    type: Type.OBJECT,
-    properties: {
-      summary: { type: Type.STRING },
-      findings: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            topic: { type: Type.STRING },
-            observed_fact: { type: Type.STRING },
-            commercial_signal: { type: Type.STRING },
-            supply_or_differentiation_signal: { type: Type.STRING },
-            inference: { type: Type.STRING }
-          },
-          required: [
-            'topic',
-            'observed_fact',
-            'commercial_signal',
-            'supply_or_differentiation_signal',
-            'inference'
-          ]
-        }
-      }
-    },
-    required: ['summary', 'findings']
   };
-
-  const contents: any[] = [];
-  if (pdfDoc?.base64Data) {
-    contents.push({
-      inlineData: {
-        mimeType: pdfDoc.mimeType || 'application/pdf',
-        data: pdfDoc.base64Data
-      }
-    });
+  for (const tag of rawTags) add(tag);
+  if (cleaned.length < limit) {
+    for (const token of extractTokens(title)) add(token);
   }
-  contents.push({ text: promptText });
-
-  let lastError: any = null;
-
-  for (const model of await candidateModels()) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: 'application/json',
-          responseSchema,
-          systemInstruction: modeIsGeminiOnly
-            ? 'You are an autonomous, evidence-first market research analyst for AS-Radar-X. Follow user instructions, inspect any attached PDF document visual pages, and live web research to discover fresh creator demands. Do not invent fake statistics.'
-            : 'You are the market research analyst for AS-Radar-X. Use human discussion evidence, attached PDF guidelines, and web research to uncover commercial stock opportunities.'
-        }
-      });
-
-      const parsed = JSON.parse(response.text || '{}') as GeminiWebResearchOutput;
-      storage.saveLastSuccessfulModel(model);
-
-      return {
-        summary: parsed.summary || 'Web research completed.',
-        findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 12) : [],
-        sources: extractGroundedSources(response),
-        search_queries: response?.candidates?.[0]?.groundingMetadata?.webSearchQueries || []
-      };
-    } catch (err: any) {
-      lastError = err;
-    }
-  }
-
-  // Graceful fallback if web research search tool is unavailable
-  return {
-    summary: 'Autonomous strategic market research conducted using user guidance and directive memory.',
-    findings: [],
-    sources: [],
-    search_queries: []
-  };
+  return cleaned.slice(0, limit);
 }
 
 export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
@@ -352,7 +114,11 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
     : '';
 
   const evidencePayload = {
-    is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
+    research_memo: input.researchMemo || '',
+    evidence_sources: input.evidenceSources || input.webResearch?.sources || [],
+    portfolio_snapshot: input.portfolioSummary || null,
+    requested_tag_count: Math.max(1, Math.min(50, Number(input.tagCount) || 25)),
+    title_instructions: input.titleInstructions || '',
     source_statuses: input.sourceStatuses,
     deterministic_analysis: input.clusterAnalyses.map((a) => ({
       name: a.cluster.name,
@@ -361,8 +127,8 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
       recurrence: a.recurrence,
       score: a.score
     })),
-    raw_evidence_count: input.rawEvidence.length,
-    human_discussion_evidence_sample: input.rawEvidence.slice(0, 50).map((e) => ({
+    raw_observation_count: input.rawEvidence.length,
+    normalized_observation_sample: input.rawEvidence.slice(0, 50).map((e) => ({
       source: e.source,
       title: e.raw_title,
       description: e.raw_description?.slice(0, 160),
@@ -374,38 +140,49 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
 
 CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
 1. MERGED SEO TITLE ONLY (NO DESCRIPTION):
-   - For every Photo and Video opportunity, combine the primary subject, setting, and critical visual details into ONE single, natural, highly SEO-optimized English title.
+   - For every Photo and Video opportunity, combine the main subject and the details that help a buyer recognize the asset into ONE natural, searchable English title.
    - Do NOT produce a separate description field. All essential context is merged directly into this single SEO title.
-   - Strictly avoid special characters like pipe ('|'), brackets, or double hyphens ('--').
+   - Keep the title clear and readable. Do not keyword-stuff or repeat near-synonyms.
 
 2. TOP-TIER PRODUCTION-READY PROMPT:
-   - Provide an ultra-detailed, top-level AI image or video generation prompt.
-   - Must explicitly specify: main visual subject, rich fine surface texture details (e.g. tactile weave, brushed metal, organic grain, micro-specular sheen, fine subsurface scattering), lighting setup (e.g. soft diffused sidelight, volumetric morning rim light, studio high-key), camera framing and lens (e.g. 85mm f/1.4, eye-level cinematic shot, shallow depth of field), background depth, color palette, and realism constraints.
-   - For Video prompts: explicitly include dynamic camera movement (smooth slider push-in, low dolly glide), physical subject movement choreography, frame rate, and loop potential.
+   - Write a production prompt that is executable and specific to the actual buyer use case and observed visual gap.
+   - Choose a suitable visual medium, composition, environment, camera approach and lighting for that subject. Do not force macro photography, cinematic lighting, shallow depth of field, or a fixed camera style when they do not fit.
+   - For Video prompts: explain the purposeful action and natural motion, and include camera movement, duration and loop potential only where they add real value.
    - STRICT CONSTRAINT 1: Do NOT clearly or directly show any human faces. Keep subjects faceless, in silhouette, from behind, over-the-shoulder, or focused on hands, tools, and environments.
    - STRICT CONSTRAINT 2: Absolutely NO text, words, signs, watermarks, or typography inside the visual content.
 
-3. EXACTLY 25 TAGS PER OPPORTUNITY:
-   - Every opportunity MUST contain EXACTLY 25 tags in its 'tags' array.
-   - The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized primary search keywords for this asset.
-   - Tags 11 to 25 provide broad commercial use cases, buyer industries, and atmospheric keywords.
+3. USER-SELECTED TAG COUNT:
+   - Return up to ${input.tagCount || 25} accurate, distinct and relevant tags.
+   - The first 10 (or all if fewer) must be the strongest, most specific search terms.
+   - Never pad with generic phrases, unrelated industries or repeated synonyms.
 
-4. EXACT OPPORTUNITY COUNT:
-   - You MUST generate exactly ${input.requestedPhotoCount} photos and exactly ${input.requestedVideoCount} videos.
-   - Strictly honor this quantity.
+4. EVIDENCE-BASED OPPORTUNITY COUNT:
+   - Requested quantities are maximums. Return fewer when evidence is insufficient or candidates are repetitive.
+   - Never invent a candidate merely to meet the count.
 
 5. ZERO SIMILARITY & HISTORICAL DEDUPLICATION:
    - No opportunities within the report may be similar to one another. Each must cover a distinct commercial niche or visual angle.
    - Compare against past history: Do NOT duplicate or repeat previous concepts or titles.
    - NEVER hardcode titles or ideas; synthesize fresh, evidence-backed content.
 
-6. NO SECONDARY DETAIL BLOCKS:
-   - Do NOT generate fields like 'why_selected', 'visual_angle', 'supply_gap', 'longevity', 'commercial_use', 'production_spec', or 'differentiation_strategy'. Focus purely on the high-quality SEO title, top-tier prompt, and 25 tags.
+6. REQUIRED TRANSPARENCY FIELDS:
+   - Include the concept, why it matters, buyer use case, visual gap, longevity, risk flags and evidence references requested by the JSON schema.
+   - Every score component must cite one or more valid evidence IDs from the supplied source list. Use 0 when the evidence is absent.
 
 ${pdfContextText}
 
+TITLE STYLE INSTRUCTIONS:
+${input.titleInstructions?.trim() || 'No title style override. Infer natural title length, word order, vocabulary and punctuation from relevant stock marketplace listing titles observed during this run. Keep titles readable, specific and searchable; never keyword-stuff.'}
+
 USER CUSTOM INSTRUCTIONS:
 ${input.userCustomInstructions || 'None'}
+
+RESEARCH MEMO AND OBSERVED SOURCE RECORDS:
+${(input.researchMemo || '').slice(0, 30000)}
+${JSON.stringify(input.evidenceSources || input.webResearch?.sources || [], null, 2)}
+
+LIVE PORTFOLIO SNAPSHOT:
+${JSON.stringify(input.portfolioSummary || null, null, 2)}
 
 USER REJECTION LIST (Strict Anti-Cliché / Exclusions):
 ${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
@@ -425,6 +202,36 @@ ${JSON.stringify(evidencePayload, null, 2)}
 
 Return strictly valid JSON matching the schema.`;
 
+  const scoreComponentSchema = {
+    type: Type.OBJECT,
+    properties: {
+      score: { type: Type.NUMBER, description: 'Evidence-based assessment from 0 to 100, not a sales probability.' },
+      reason: { type: Type.STRING, description: 'Short rationale tied to exact source evidence IDs; state evidence limitations.' },
+      evidence_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } }
+    },
+    required: ['score', 'reason', 'evidence_ids']
+  };
+  const scoreComponentsSchema = {
+    type: Type.OBJECT,
+    properties: {
+      recurring_demand: scoreComponentSchema,
+      commercial_use: scoreComponentSchema,
+      marketplace_evidence: scoreComponentSchema,
+      supply_gap: scoreComponentSchema,
+      longevity: scoreComponentSchema,
+      production_feasibility: scoreComponentSchema
+    },
+    required: ['recurring_demand','commercial_use','marketplace_evidence','supply_gap','longevity','production_feasibility']
+  };
+  const evidenceSchema = {
+    type: Type.OBJECT,
+    properties: {
+      observed_facts: { type: Type.ARRAY, items: { type: Type.STRING } },
+      inferences: { type: Type.ARRAY, items: { type: Type.STRING } },
+      source_ids: { type: Type.ARRAY, items: { type: Type.NUMBER } }
+    },
+    required: ['observed_facts','inferences','source_ids']
+  };
   const photoOpportunitySchema = {
     type: Type.OBJECT,
     properties: {
@@ -437,16 +244,21 @@ Return strictly valid JSON matching the schema.`;
       prompt: {
         type: Type.STRING,
         description:
-          'Top-level detailed AI image prompt specifying subject, fine surface texture details, lighting, environment, camera lens, color palette, realism constraints. No human faces directly shown, no text in image.'
+          'Production-ready AI image prompt adapted to the buyer use case, visual angle, medium, composition, setting and realism requirements. Specify technical detail only where relevant. No human faces directly shown, no text in image.'
       },
-      tags: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
-        description:
-          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
-      }
+      tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
+      concept: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      visual_angle: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
+      evidence: evidenceSchema,
+      score_components: scoreComponentsSchema
     },
-    required: ['id', 'title', 'prompt', 'tags']
+    required: ['id','title','prompt','tags','concept','why_selected','commercial_use','buyer_use_case','visual_angle','supply_gap','longevity','evidence','score_components']
   };
 
   const videoOpportunitySchema = {
@@ -456,21 +268,28 @@ Return strictly valid JSON matching the schema.`;
       title: {
         type: Type.STRING,
         description:
-          'Single natural SEO-optimized English sentence combining main subject and cinematic movement details. No separate description. No special characters like |.'
+          'Single natural SEO-optimized English sentence describing the stock footage subject and useful motion. No separate description. No special characters like |.'
       },
       prompt: {
         type: Type.STRING,
         description:
-          'Top-level detailed AI video prompt specifying cinematic camera movement, choreography, fine texture details, lighting, camera lens, color palette, stabilization. No human faces directly shown, no text in video.'
+          "Production-ready AI video prompt adapted to the buyer's actual motion need. Describe purposeful subject movement; add camera movement, duration, loop and technical details only when useful. No human faces directly shown, no text in video." 
       },
-      tags: {
-        type: Type.ARRAY,
-        items: { type: Type.STRING },
-        description:
-          'EXACTLY 25 keywords. The first 10 tags MUST be the most highly relevant, commercial, and SEO-optimized terms.'
-      }
+      tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
+      concept: { type: Type.STRING },
+      why_selected: { type: Type.STRING },
+      commercial_use: { type: Type.STRING },
+      buyer_use_case: { type: Type.STRING },
+      motion_value: { type: Type.STRING },
+      motion_action: { type: Type.STRING },
+      loop_potential: { type: Type.STRING },
+      supply_gap: { type: Type.STRING },
+      longevity: { type: Type.STRING },
+      risk_notes: { type: Type.STRING },
+      evidence: evidenceSchema,
+      score_components: scoreComponentsSchema
     },
-    required: ['id', 'title', 'prompt', 'tags']
+    required: ['id','title','prompt','tags','concept','why_selected','commercial_use','buyer_use_case','motion_value','supply_gap','longevity','evidence','score_components']
   };
 
   const responseSchema = {
@@ -520,7 +339,7 @@ Return strictly valid JSON matching the schema.`;
           }
         });
 
-        const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+        const parsed = JSON.parse(response.text || '{}') as GeminiModelOutput;
         storage.saveLastSuccessfulModel(model);
 
         // Process and validate Photos
@@ -554,16 +373,30 @@ Return strictly valid JSON matching the schema.`;
             continue;
           }
 
-          const tags25 = normalizeTags25(rawP.tags, cleanTitle, rawP.prompt);
-
+          const tags = normalizeTags(rawP.tags, cleanTitle, rawP.prompt, input.tagCount || 25);
+          const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
+          const score = calculateOpportunityScore(rawP.score_components, validIds);
+          const sourceIds = Array.isArray(rawP.evidence?.source_ids) ? rawP.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
+          if (!sourceIds.length) continue;
           processedPhotos.push({
             id: rawP.id || `photo-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
             prompt: rawP.prompt || '',
-            tags: tags25
+            tags,
+            concept: rawP.concept || '',
+            why_selected: rawP.why_selected || '',
+            market_evidence: (rawP.evidence?.observed_facts || []).join(' | '),
+            commercial_use: rawP.commercial_use || '',
+            buyer_use_case: rawP.buyer_use_case || '',
+            visual_angle: rawP.visual_angle || '',
+            supply_gap: rawP.supply_gap || '',
+            longevity: rawP.longevity || '',
+            risk_notes: rawP.risk_notes || '',
+            evidence: { ...(rawP.evidence || {}), source_ids: sourceIds, source_refs: sourceIds.map((id: number) => (input.evidenceSources || input.webResearch?.sources || []).find((source) => Number(source.id) === id)).filter(Boolean) },
+            score
           });
 
-          if (processedPhotos.length === input.requestedPhotoCount) break;
+          if (processedPhotos.length >= input.requestedPhotoCount) break;
         }
 
         // Process and validate Videos
@@ -597,16 +430,31 @@ Return strictly valid JSON matching the schema.`;
             continue;
           }
 
-          const tags25 = normalizeTags25(rawV.tags, cleanTitle, rawV.prompt);
-
+          const tags = normalizeTags(rawV.tags, cleanTitle, rawV.prompt, input.tagCount || 25);
+          const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
+          const score = calculateOpportunityScore(rawV.score_components, validIds);
+          const sourceIds = Array.isArray(rawV.evidence?.source_ids) ? rawV.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
+          if (!sourceIds.length) continue;
           processedVideos.push({
             id: rawV.id || `video-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
             prompt: rawV.prompt || '',
-            tags: tags25
+            tags,
+            concept: rawV.concept || '',
+            why_selected: rawV.why_selected || '',
+            commercial_use: rawV.commercial_use || '',
+            buyer_use_case: rawV.buyer_use_case || '',
+            motion_value: rawV.motion_value || '',
+            motion_action: rawV.motion_action || '',
+            loop_potential: rawV.loop_potential || '',
+            supply_gap: rawV.supply_gap || '',
+            longevity: rawV.longevity || '',
+            risk_notes: rawV.risk_notes || '',
+            evidence: { ...(rawV.evidence || {}), source_ids: sourceIds, source_refs: sourceIds.map((id: number) => (input.evidenceSources || input.webResearch?.sources || []).find((source) => Number(source.id) === id)).filter(Boolean) },
+            score
           });
 
-          if (processedVideos.length === input.requestedVideoCount) break;
+          if (processedVideos.length >= input.requestedVideoCount) break;
         }
 
         return {

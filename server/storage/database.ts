@@ -1,12 +1,11 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
-  DiscordConfig,
   HistoryRecord,
   PdfDocumentConfig,
   RawEvidence,
-  RedditConfig,
   ResearchReport
 } from '../types.js';
 
@@ -31,42 +30,6 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   password: ''
 };
 
-const DEFAULT_SUBREDDITS = [
-  'StockPhotography',
-  'AdobeStock',
-  'Shutterstock',
-  'graphic_design',
-  'VideoEditing',
-  'editors',
-  'Midjourney',
-  'blender',
-  'vfx'
-];
-
-const DEFAULT_REDDIT_CONFIG: RedditConfig = {
-  clientId: '',
-  clientSecret: '',
-  userAgent: 'AS-Radar-X/2.0 (by /u/saradagreats)',
-  subreddits: [...DEFAULT_SUBREDDITS],
-  timeframe: '24h',
-  collectPosts: true,
-  collectComments: true,
-  connected: false,
-  lastCollectedAt: undefined,
-  collectedCount: 0
-};
-
-const DEFAULT_DISCORD_CONFIG: DiscordConfig = {
-  botToken: '',
-  guilds: [],
-  timeframe: '24h',
-  collectMessages: true,
-  collectThreads: true,
-  connected: false,
-  lastCollectedAt: undefined,
-  collectedCount: 0
-};
-
 class StorageManager {
   private db: DatabaseSync | null = null;
   private memoryFallback: {
@@ -74,9 +37,6 @@ class StorageManager {
     instructions: string;
     rejectedContent: string[];
     evidence: Map<string, RawEvidence[]>;
-    redditConfig: RedditConfig;
-    discordConfig: DiscordConfig;
-    platformDataEnabled: boolean;
     pdfDocument: PdfDocumentConfig | null;
     proxySettings: ProxySettings;
   } = {
@@ -84,9 +44,6 @@ class StorageManager {
     instructions: '',
     rejectedContent: [],
     evidence: new Map(),
-    redditConfig: { ...DEFAULT_REDDIT_CONFIG },
-    discordConfig: { ...DEFAULT_DISCORD_CONFIG },
-    platformDataEnabled: true,
     pdfDocument: null,
     proxySettings: { ...DEFAULT_PROXY_SETTINGS }
   };
@@ -150,6 +107,86 @@ class StorageManager {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS research_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        url TEXT,
+        details_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_research_events_job ON research_events(job_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS portfolio_assets (
+        asset_key TEXT PRIMARY KEY,
+        source_asset_id TEXT,
+        status TEXT,
+        title TEXT,
+        rejection_reason TEXT,
+        downloads INTEGER,
+        earnings REAL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_job_id TEXT,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_status ON portfolio_assets(status);
+
+      CREATE TABLE IF NOT EXISTS portfolio_change_log (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        asset_key TEXT NOT NULL,
+        change_type TEXT NOT NULL,
+        previous_json TEXT,
+        current_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_changes_job ON portfolio_change_log(job_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS research_knowledge (
+        fingerprint TEXT PRIMARY KEY,
+        canonical_url TEXT NOT NULL,
+        normalized_title TEXT NOT NULL,
+        keywords_json TEXT NOT NULL,
+        category TEXT NOT NULL,
+        commercial_intent TEXT NOT NULL,
+        source_family TEXT NOT NULL,
+        observation TEXT,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        seen_count INTEGER NOT NULL DEFAULT 1,
+        last_job_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_research_knowledge_seen ON research_knowledge(last_seen_at);
+      CREATE INDEX IF NOT EXISTS idx_research_knowledge_family ON research_knowledge(source_family);
+
+      CREATE TABLE IF NOT EXISTS research_knowledge_observations (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        observation_json TEXT NOT NULL,
+        UNIQUE(fingerprint, content_hash, job_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_knowledge_observations_job ON research_knowledge_observations(job_id, collected_at);
+
+      CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        source_url TEXT,
+        summary_json TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS opportunity_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT NOT NULL,
@@ -165,9 +202,6 @@ class StorageManager {
     try {
       this.memoryFallback.instructions = this.getInstructions();
       this.memoryFallback.rejectedContent = this.getRejectedContent();
-      this.memoryFallback.redditConfig = this.getRedditConfig();
-      this.memoryFallback.discordConfig = this.getDiscordConfig();
-      this.memoryFallback.platformDataEnabled = this.getPlatformDataEnabled();
       this.memoryFallback.pdfDocument = this.getPdfDocument();
       this.memoryFallback.proxySettings = this.getProxySettings();
     } catch (e) {
@@ -191,9 +225,6 @@ class StorageManager {
         const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
         this.memoryFallback.instructions = parsed.instructions || '';
         this.memoryFallback.rejectedContent = parsed.rejectedContent || [];
-        if (parsed.redditConfig) this.memoryFallback.redditConfig = { ...DEFAULT_REDDIT_CONFIG, ...parsed.redditConfig };
-        if (parsed.discordConfig) this.memoryFallback.discordConfig = { ...DEFAULT_DISCORD_CONFIG, ...parsed.discordConfig };
-        if (typeof parsed.platformDataEnabled === 'boolean') this.memoryFallback.platformDataEnabled = parsed.platformDataEnabled;
         if (parsed.pdfDocument) this.memoryFallback.pdfDocument = parsed.pdfDocument;
         if (parsed.proxySettings) this.memoryFallback.proxySettings = { ...DEFAULT_PROXY_SETTINGS, ...parsed.proxySettings };
       }
@@ -218,9 +249,6 @@ class StorageManager {
           {
             instructions: this.memoryFallback.instructions,
             rejectedContent: this.memoryFallback.rejectedContent,
-            redditConfig: this.memoryFallback.redditConfig,
-            discordConfig: this.memoryFallback.discordConfig,
-            platformDataEnabled: this.memoryFallback.platformDataEnabled,
             pdfDocument: this.memoryFallback.pdfDocument,
             proxySettings: this.memoryFallback.proxySettings
           },
@@ -232,6 +260,181 @@ class StorageManager {
     } catch (e) {
       console.error('Failed writing fallback files:', e);
     }
+  }
+
+  public appendResearchEvent(event: { id: string; jobId: string; at: string; type: string; message: string; url?: string; details?: Record<string, any> }) {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`INSERT OR IGNORE INTO research_events (id, job_id, created_at, event_type, message, url, details_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(event.id, event.jobId, event.at, event.type, event.message, event.url || null, JSON.stringify(event.details || {}));
+    } catch (error) { console.error('SQLite appendResearchEvent error:', error); }
+  }
+
+  public getResearchEvents(jobId: string, after = 0) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM research_events WHERE job_id = ? ORDER BY created_at ASC LIMIT -1 OFFSET ?').all(jobId, Math.max(0, after)) as any[];
+      return rows.map(row => ({ id: row.id, jobId: row.job_id, at: row.created_at, type: row.event_type, message: row.message, url: row.url || undefined, details: JSON.parse(row.details_json || '{}') }));
+    } catch (error) { console.error('SQLite getResearchEvents error:', error); return []; }
+  }
+
+  public upsertPortfolioAssets(jobId: string, assets: Array<Record<string, any>>, sourceUrl = '') {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    try {
+      const find = this.db.prepare('SELECT first_seen_at, source_asset_id, status, title, rejection_reason, downloads, earnings FROM portfolio_assets WHERE asset_key = ?');
+      const stmt = this.db.prepare(`INSERT INTO portfolio_assets (asset_key, source_asset_id, status, title, rejection_reason, downloads, earnings, first_seen_at, last_seen_at, last_job_id, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=COALESCE(excluded.downloads, portfolio_assets.downloads), earnings=COALESCE(excluded.earnings, portfolio_assets.earnings), last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
+      const change = this.db.prepare('INSERT INTO portfolio_change_log (id, job_id, asset_key, change_type, previous_json, current_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      for (const asset of assets) {
+        const sourceId = String(asset.assetId || asset.id || '').trim();
+        const stableDetails = [
+          String(asset.title || '').trim().toLowerCase(),
+          String(asset.href || '').trim().split('?')[0],
+          String(asset.thumbnail || '').trim().split('?')[0]
+        ].join('|');
+        const stableKey = sourceId
+          ? 'adobe:' + sourceId
+          : 'adobe:hash:' + crypto.createHash('sha256').update(stableDetails).digest('hex');
+        const old = find.get(stableKey) as any;
+        const downloads = asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : old?.downloads ?? null;
+        const earnings = asset.earnings !== null && asset.earnings !== undefined && Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : old?.earnings ?? null;
+        const normalized = {
+          sourceAssetId: sourceId || old?.source_asset_id || null,
+          status: String(asset.status || old?.status || 'UNKNOWN'),
+          title: String(asset.title || old?.title || ''),
+          rejectionReason: String(asset.rejectionReason || (asset.status === 'REJECTED' ? old?.rejection_reason || '' : '')),
+          downloads,
+          earnings,
+          sourceUrl
+        };
+        const previous = old ? {
+          status: old.status, title: old.title, rejectionReason: old.rejection_reason,
+          downloads: old.downloads, earnings: old.earnings
+        } : null;
+        const changes: string[] = [];
+        if (!old) changes.push('NEW_ASSET');
+        else {
+          if (String(previous?.status || '') !== normalized.status) changes.push('STATUS_CHANGED');
+          if (String(previous?.rejectionReason || '') !== normalized.rejectionReason) changes.push('REJECTION_REASON_CHANGED');
+          if (previous?.downloads !== normalized.downloads || previous?.earnings !== normalized.earnings) changes.push('PERFORMANCE_CHANGED');
+          if (String(previous?.title || '') !== normalized.title) changes.push('METADATA_CHANGED');
+        }
+        stmt.run(
+          stableKey, normalized.sourceAssetId, normalized.status, normalized.title,
+          normalized.rejectionReason, normalized.downloads, normalized.earnings,
+          old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, ...normalized })
+        );
+        if (changes.length) {
+          for (const changeType of changes) {
+            change.run(crypto.randomUUID(), jobId, stableKey, changeType, previous ? JSON.stringify(previous) : null, JSON.stringify(normalized), now);
+          }
+        }
+      }
+    } catch (error) { console.error('SQLite upsertPortfolioAssets error:', error); }
+  }
+
+  public getPortfolioChanges(jobId: string) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM portfolio_change_log WHERE job_id = ? ORDER BY created_at ASC').all(jobId) as any[];
+      return rows.map(row => ({
+        id: row.id, jobId: row.job_id, assetKey: row.asset_key, changeType: row.change_type,
+        previous: row.previous_json ? JSON.parse(row.previous_json) : null,
+        current: JSON.parse(row.current_json || '{}'), createdAt: row.created_at
+      }));
+    } catch (error) { console.error('SQLite getPortfolioChanges error:', error); return []; }
+  }
+
+
+  public saveNormalizedResearchEvidence(jobId: string, records: Array<Record<string, any>>) {
+    if (!this.db || !Array.isArray(records) || !records.length) return;
+    const upsert = this.db.prepare('INSERT INTO research_knowledge (fingerprint, canonical_url, normalized_title, keywords_json, category, commercial_intent, source_family, observation, first_seen_at, last_seen_at, seen_count, last_job_id, content_hash, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT(fingerprint) DO UPDATE SET canonical_url=excluded.canonical_url, normalized_title=excluded.normalized_title, keywords_json=excluded.keywords_json, category=excluded.category, commercial_intent=excluded.commercial_intent, source_family=excluded.source_family, observation=excluded.observation, last_seen_at=excluded.last_seen_at, seen_count=research_knowledge.seen_count+1, last_job_id=excluded.last_job_id, content_hash=excluded.content_hash, record_json=excluded.record_json');
+    const observation = this.db.prepare('INSERT OR IGNORE INTO research_knowledge_observations (id, fingerprint, job_id, collected_at, content_hash, observation_json) VALUES (?, ?, ?, ?, ?, ?)');
+    try {
+      for (const record of records) {
+        const collectedAt = String(record.collectedAt || new Date().toISOString());
+        const fingerprint = String(record.fingerprint || '');
+        const contentHash = String(record.contentHash || '');
+        if (!fingerprint || !contentHash) continue;
+        const payload = JSON.stringify(record);
+        upsert.run(
+          fingerprint, String(record.canonicalUrl || record.url || ''), String(record.title || ''),
+          JSON.stringify(record.keywords || []), String(record.category || 'Unknown'),
+          String(record.commercialIntent || 'Unknown'), String(record.sourceFamily || 'website'),
+          String(record.observation || '').slice(0, 12000), collectedAt, collectedAt,
+          jobId, contentHash, payload
+        );
+        observation.run(crypto.createHash('sha256').update(fingerprint + '|' + contentHash + '|' + jobId).digest('hex'), fingerprint, jobId, collectedAt, contentHash, payload);
+      }
+    } catch (error) {
+      console.error('SQLite saveNormalizedResearchEvidence error:', error);
+    }
+  }
+
+  public getRecentNormalizedResearchEvidence(limit = 80) {
+    if (!this.db) return [];
+    try {
+      const safeLimit = Math.max(1, Math.min(500, Math.floor(limit) || 80));
+      const rows = this.db.prepare('SELECT record_json, first_seen_at, last_seen_at, seen_count, last_job_id FROM research_knowledge ORDER BY last_seen_at DESC LIMIT ?').all(safeLimit) as any[];
+      return rows.map(row => ({
+        ...JSON.parse(row.record_json || '{}'),
+        firstSeenAt: row.first_seen_at,
+        lastSeenAt: row.last_seen_at,
+        seenCount: Number(row.seen_count) || 1,
+        lastJobId: row.last_job_id
+      }));
+    } catch (error) {
+      console.error('SQLite getRecentNormalizedResearchEvidence error:', error);
+      return [];
+    }
+  }
+
+  public getNormalizedEvidenceObservationCount(jobId: string) {
+    if (!this.db) return 0;
+    try {
+      const row = this.db.prepare('SELECT COUNT(*) AS count FROM research_knowledge_observations WHERE job_id = ?').get(jobId) as any;
+      return Number(row?.count) || 0;
+    } catch (error) {
+      console.error('SQLite getNormalizedEvidenceObservationCount error:', error);
+      return 0;
+    }
+  }
+
+  public savePortfolioSnapshot(jobId: string, sourceUrl: string, summary: Record<string, any>) {
+    if (!this.db) return;
+    try {
+      this.db.prepare('INSERT INTO portfolio_snapshots (id, job_id, captured_at, source_url, summary_json) VALUES (?, ?, ?, ?, ?)')
+        .run(crypto.randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
+    } catch (error) { console.error('SQLite savePortfolioSnapshot error:', error); }
+  }
+
+  public getLatestPortfolioSnapshot(jobId?: string) {
+    if (!this.db) return null;
+    try {
+      const row = jobId
+        ? this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots WHERE job_id = ? ORDER BY captured_at DESC LIMIT 1').get(jobId) as any
+        : this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots ORDER BY captured_at DESC LIMIT 1').get() as any;
+      if (!row) return null;
+      return { id: row.id, jobId: row.job_id, capturedAt: row.captured_at, sourceUrl: row.source_url, summary: JSON.parse(row.summary_json || '{}') };
+    } catch (error) { console.error('SQLite getLatestPortfolioSnapshot error:', error); return null; }
+  }
+
+  public getPortfolioAssetsForJob(jobId: string) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets WHERE last_job_id = ? ORDER BY last_seen_at DESC').all(jobId) as any[];
+      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
+    } catch (error) { console.error('SQLite getPortfolioAssetsForJob error:', error); return []; }
+  }
+
+  public getPortfolioAssets() {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets ORDER BY last_seen_at DESC').all() as any[];
+      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
+    } catch (error) { console.error('SQLite getPortfolioAssets error:', error); return []; }
   }
 
   public saveReport(report: ResearchReport) {
@@ -682,182 +885,6 @@ class StorageManager {
       list.splice(index, 1);
       this.saveRejectedContent(list);
     }
-  }
-
-  // Platform Data Toggle
-  public getPlatformDataEnabled(): boolean {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'platform_data_enabled'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value !== undefined) {
-          return row.value === 'true' || row.value === '1';
-        }
-      } catch (err) {
-        console.error('SQLite getPlatformDataEnabled error:', err);
-      }
-    }
-    return this.memoryFallback.platformDataEnabled ?? true;
-  }
-
-  public savePlatformDataEnabled(enabled: boolean): void {
-    this.memoryFallback.platformDataEnabled = !!enabled;
-    this.persistFallback();
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('platform_data_enabled', ?)
-        `);
-        stmt.run(enabled ? 'true' : 'false');
-      } catch (err) {
-        console.error('SQLite savePlatformDataEnabled error:', err);
-      }
-    }
-  }
-
-  // Reddit Configuration
-  public getRedditConfig(): RedditConfig {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'reddit_config'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value) {
-          const parsed = JSON.parse(row.value);
-          return {
-            ...DEFAULT_REDDIT_CONFIG,
-            ...parsed,
-            subreddits: Array.isArray(parsed.subreddits) && parsed.subreddits.length > 0 ? parsed.subreddits : [...DEFAULT_SUBREDDITS]
-          };
-        }
-      } catch (err) {
-        console.error('SQLite getRedditConfig error:', err);
-      }
-    }
-    return this.memoryFallback.redditConfig || { ...DEFAULT_REDDIT_CONFIG };
-  }
-
-  public getMaskedRedditConfig(): RedditConfig {
-    const config = this.getRedditConfig();
-    return {
-      ...config,
-      clientSecret: config.clientSecret ? '••••••••' : ''
-    };
-  }
-
-  public saveRedditConfig(patch: Partial<RedditConfig>): RedditConfig {
-    const current = this.getRedditConfig();
-    const isMaskedSecret = patch.clientSecret && (patch.clientSecret === '••••••••' || patch.clientSecret.includes('••'));
-
-    const updated: RedditConfig = {
-      ...current,
-      clientId: patch.clientId !== undefined ? patch.clientId.trim() : current.clientId,
-      clientSecret: isMaskedSecret ? current.clientSecret : (patch.clientSecret !== undefined ? patch.clientSecret.trim() : current.clientSecret),
-      userAgent: patch.userAgent !== undefined ? patch.userAgent.trim() || DEFAULT_REDDIT_CONFIG.userAgent : current.userAgent,
-      subreddits: Array.isArray(patch.subreddits) ? patch.subreddits.map((s) => s.replace(/^r\//i, '').trim()).filter(Boolean) : current.subreddits,
-      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
-      collectPosts: patch.collectPosts !== undefined ? !!patch.collectPosts : current.collectPosts,
-      collectComments: patch.collectComments !== undefined ? !!patch.collectComments : current.collectComments,
-      connected: patch.connected !== undefined ? patch.connected : current.connected,
-      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
-      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
-    };
-
-    this.memoryFallback.redditConfig = updated;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('reddit_config', ?)
-        `);
-        stmt.run(JSON.stringify(updated));
-      } catch (err) {
-        console.error('SQLite saveRedditConfig error:', err);
-      }
-    }
-
-    return updated;
-  }
-
-  public updateRedditStats(collectedCount: number, connected: boolean = true): void {
-    const current = this.getRedditConfig();
-    current.lastCollectedAt = new Date().toISOString();
-    current.collectedCount = (current.collectedCount || 0) + collectedCount;
-    current.connected = connected;
-    this.saveRedditConfig(current);
-  }
-
-  // Discord Configuration
-  public getDiscordConfig(): DiscordConfig {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'discord_config'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value) {
-          const parsed = JSON.parse(row.value);
-          return {
-            ...DEFAULT_DISCORD_CONFIG,
-            ...parsed,
-            guilds: Array.isArray(parsed.guilds) ? parsed.guilds : []
-          };
-        }
-      } catch (err) {
-        console.error('SQLite getDiscordConfig error:', err);
-      }
-    }
-    return this.memoryFallback.discordConfig || { ...DEFAULT_DISCORD_CONFIG };
-  }
-
-  public getMaskedDiscordConfig(): DiscordConfig {
-    const config = this.getDiscordConfig();
-    return {
-      ...config,
-      botToken: config.botToken ? '••••••••' : ''
-    };
-  }
-
-  public saveDiscordConfig(patch: Partial<DiscordConfig>): DiscordConfig {
-    const current = this.getDiscordConfig();
-    const isMaskedToken = patch.botToken && (patch.botToken === '••••••••' || patch.botToken.includes('••'));
-
-    const updated: DiscordConfig = {
-      ...current,
-      botToken: isMaskedToken ? current.botToken : (patch.botToken !== undefined ? patch.botToken.trim() : current.botToken),
-      guilds: Array.isArray(patch.guilds) ? patch.guilds : current.guilds,
-      timeframe: patch.timeframe === '7d' ? '7d' : '24h',
-      collectMessages: patch.collectMessages !== undefined ? !!patch.collectMessages : current.collectMessages,
-      collectThreads: patch.collectThreads !== undefined ? !!patch.collectThreads : current.collectThreads,
-      connected: patch.connected !== undefined ? patch.connected : current.connected,
-      lastCollectedAt: patch.lastCollectedAt !== undefined ? patch.lastCollectedAt : current.lastCollectedAt,
-      collectedCount: patch.collectedCount !== undefined ? patch.collectedCount : current.collectedCount
-    };
-
-    this.memoryFallback.discordConfig = updated;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('discord_config', ?)
-        `);
-        stmt.run(JSON.stringify(updated));
-      } catch (err) {
-        console.error('SQLite saveDiscordConfig error:', err);
-      }
-    }
-
-    return updated;
-  }
-
-  public updateDiscordStats(collectedCount: number, connected: boolean = true): void {
-    const current = this.getDiscordConfig();
-    current.lastCollectedAt = new Date().toISOString();
-    current.collectedCount = (current.collectedCount || 0) + collectedCount;
-    current.connected = connected;
-    this.saveDiscordConfig(current);
   }
 
   // V2Ray / desktop proxy settings

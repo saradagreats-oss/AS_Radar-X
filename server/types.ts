@@ -1,6 +1,6 @@
 export type CollectorStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'ERROR' | 'BLOCKED' | 'EMPTY' | 'DISABLED';
 
-export type DataSourceType = 'Reddit' | 'Discord' | 'AI Intelligence';
+export type DataSourceType = 'Browser Research' | 'Adobe Stock Portfolio' | 'AI Intelligence';
 
 export interface RawEvidence {
   source: DataSourceType;
@@ -131,11 +131,51 @@ export interface ProductionSpec {
   loop_strategy?: string;
 }
 
+export interface ScoreComponent {
+  score: number;
+  reason: string;
+  evidence_ids: number[];
+}
+
+export interface OpportunityScore {
+  score: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  breakdown: {
+    recurring_demand: ScoreComponent;
+    commercial_use: ScoreComponent;
+    marketplace_evidence: ScoreComponent;
+    supply_gap: ScoreComponent;
+    longevity: ScoreComponent;
+    production_feasibility: ScoreComponent;
+  };
+  formula: string;
+}
+
+export interface SourceEvidenceRecord {
+  id: number;
+  title: string;
+  url: string;
+  source_family?: string;
+  observation?: string;
+}
+
+export interface PortfolioSummary {
+  rowCount: number;
+  accepted?: number | null;
+  rejected?: number | null;
+  pending?: number | null;
+  totalDownloads?: number | null;
+  changedAssets?: number;
+  syncedAssets?: number;
+  sourceUrl?: string;
+  capturedAt?: string;
+}
+
 export interface PhotoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and visual context
   prompt: string; // Top-level detailed prompt with texture, lighting, camera framing, visual style
-  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  tags: string[]; // User-selected count; first 10 are the highest-impact relevant tags
   description?: string;
   concept?: string;
   why_selected?: string;
@@ -150,13 +190,14 @@ export interface PhotoOpportunity {
   buyer_use_case?: string;
   risk_notes?: string;
   evidence?: Record<string, any>;
+  score?: OpportunityScore;
 }
 
 export interface VideoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and cinematic movement context
   prompt: string; // Top-level detailed motion prompt with texture, camera motion, frame rate, lighting
-  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  tags: string[]; // User-selected count; first 10 are the highest-impact relevant tags
   description?: string;
   concept?: string;
   why_selected?: string;
@@ -173,6 +214,7 @@ export interface VideoOpportunity {
   buyer_use_case?: string;
   risk_notes?: string;
   evidence?: Record<string, any>;
+  score?: OpportunityScore;
 }
 
 export interface PdfDocumentConfig {
@@ -200,6 +242,10 @@ export interface ResearchReport {
   videos: VideoOpportunity[];
   warnings?: string[];
   internal_score_explanation?: string;
+  score_summary?: { average: number; highest: number; scored: number; formula: string };
+  portfolio_summary?: PortfolioSummary | null;
+  browser_research?: { pages: number; actions: number; screenshots: number; model: string; turn_limit_reached?: boolean };
+  evidence_sources?: SourceEvidenceRecord[];
   analysis_stats?: {
     raw_evidence_count: number;
     deduplicated_evidence_count: number;
@@ -223,6 +269,11 @@ export interface HistoryRecord {
 
 export type ResearchStage =
   | 'INITIALIZING'
+  | 'PLANNING'
+  | 'BROWSER_RESEARCH'
+  | 'PAUSED_FOR_USER'
+  | 'FINAL_ANALYSIS'
+  | 'PORTFOLIO_SYNC'
   | 'COLLECTING'
   | 'NORMALIZING'
   | 'DEDUPLICATING'
@@ -246,41 +297,4 @@ export interface ResearchJobState {
   startedAt: number;
   error?: string;
   report?: ResearchReport;
-}
-
-// Reddit Configuration & Status
-export interface RedditConfig {
-  clientId: string;
-  clientSecret: string;
-  userAgent: string;
-  subreddits: string[];
-  timeframe: '24h' | '7d';
-  collectPosts: boolean;
-  collectComments: boolean;
-  connected?: boolean;
-  lastCollectedAt?: string;
-  collectedCount?: number;
-}
-
-// Discord Configuration & Status
-export interface DiscordGuildConfig {
-  id: string;
-  name?: string;
-  channels: Array<{ id: string; name?: string }>;
-}
-
-export interface DiscordConfig {
-  botToken: string;
-  guilds: DiscordGuildConfig[];
-  timeframe: '24h' | '7d';
-  collectMessages: boolean;
-  collectThreads: boolean;
-  connected?: boolean;
-  lastCollectedAt?: string;
-  collectedCount?: number;
-}
-
-// Platform Data Switch Configuration
-export interface PlatformDataConfig {
-  enabled: boolean;
 }
