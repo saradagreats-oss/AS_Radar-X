@@ -40,15 +40,6 @@ export default function App() {
   const [showBrowser, setShowBrowser] = useState<boolean>(false);
   const [portfolioRefreshKey, setPortfolioRefreshKey] = useState<number>(0);
 
-  // Platform Data Switch state (Default: ON)
-  const [platformDataEnabled, setPlatformDataEnabled] = useState<boolean>(true);
-
-  // Live Sources Probe & Stream state
-  const [probeData, setProbeData] = useState<any | null>(null);
-  const [isProbing, setIsProbing] = useState<boolean>(false);
-  const [probeFilter, setProbeFilter] = useState<string>('ALL');
-  const [probeSearch, setProbeSearch] = useState<string>('');
-
   // Raw Evidence Modal state
   const [evidenceModal, setEvidenceModal] = useState<{
     isOpen: boolean;
@@ -106,47 +97,6 @@ export default function App() {
 
   // Evidence open toggles
   const [openEvidenceMap, setOpenEvidenceMap] = useState<Record<string, boolean>>({});
-
-  // System Config
-  const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
-  const [sourcesStatus, setSourcesStatus] = useState<Record<string, string>>({
-    Reddit: 'NOT CHECKED',
-    Discord: 'NOT CHECKED'
-  });
-
-  // Reddit Configuration State
-  const [redditConfig, setRedditConfig] = useState<RedditConfig>({
-    clientId: '',
-    clientSecret: '',
-    userAgent: 'AS-Radar-X/2.0 (by /u/saradagreats)',
-    subreddits: [
-      'StockPhotography',
-      'AdobeStock',
-      'Shutterstock',
-      'graphic_design',
-      'VideoEditing',
-      'editors',
-      'Midjourney',
-      'blender',
-      'vfx'
-    ],
-    timeframe: '24h',
-    collectPosts: true,
-    collectComments: true,
-    connected: false,
-    collectedCount: 0
-  });
-
-  // Discord Configuration State
-  const [discordConfig, setDiscordConfig] = useState<DiscordConfig>({
-    botToken: '',
-    guilds: [],
-    timeframe: '24h',
-    collectMessages: true,
-    collectThreads: true,
-    connected: false,
-    collectedCount: 0
-  });
 
   // Gemini Configuration State
   const [geminiConfig, setGeminiConfig] = useState<{
