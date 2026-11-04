@@ -65,12 +65,12 @@ function attachResearchBrowser() {
 }
 
 function updateResearchBrowserBounds(_event, bounds) {
-  if (!researchBrowser || !mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   const b = bounds && Number.isFinite(bounds.x) ? bounds : (lastBrowserBounds || { x: 0, y: 0, width: mainWindow.getContentBounds().width, height: mainWindow.getContentBounds().height });
   const width = Math.max(0, Math.min(10000, Math.round(b.width)));
   const height = Math.max(0, Math.min(10000, Math.round(b.height)));
   lastBrowserBounds = { x: Math.max(0, Math.round(b.x)), y: Math.max(0, Math.round(b.y)), width, height };
-  researchBrowser.setBounds(lastBrowserBounds);
+  if (researchBrowser) researchBrowser.setBounds(lastBrowserBounds);
 }
 
 async function browserSnapshot() {
