@@ -83,7 +83,7 @@ async function browserSnapshot() {
     return {url:location.href,title:document.title,text,headings,links,images,tables,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor/i.test(text),capturedAt:new Date().toISOString()};
   })()`, true);
   let screenshotBase64;
-  if (!snapshot.focusedPassword && browserVisible) {
+  if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint && browserVisible) {
     const image = await researchBrowser.webContents.capturePage();
     screenshotBase64 = image.toJPEG(65).toString('base64');
   }
@@ -128,6 +128,14 @@ async function executeBrowserAction(action, args = {}) {
     case 'type': {
       const focused = await wc.executeJavaScript(`(() => { const e=document.activeElement; return !!e && (e.tagName==='INPUT' || e.tagName==='TEXTAREA' || e.isContentEditable) && !(e.tagName==='INPUT' && e.type==='password') && !e.closest('form')?.querySelector('input[type=password]'); })()`);
       if (!focused) throw new Error('Typing is blocked unless a non-password text field is focused. Login credentials must be entered manually by the user.');
+      if (args.clear === true) {
+        wc.sendInputEvent({ type: 'keyDown', keyCode: 'Control' });
+        wc.sendInputEvent({ type: 'keyDown', keyCode: 'A' });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: 'A' });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: 'Control' });
+        wc.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+      }
       const value = String(args.text||'').slice(0,2000);
       wc.insertText(value);
       return { typedCharacters: value.length };
