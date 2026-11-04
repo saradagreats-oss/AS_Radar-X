@@ -4,7 +4,6 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   HistoryRecord,
-  PdfDocumentConfig,
   RawEvidence,
   ResearchReport
 } from '../types.js';
@@ -34,17 +33,13 @@ class StorageManager {
   private db: DatabaseSync | null = null;
   private memoryFallback: {
     reports: Map<string, ResearchReport>;
-    instructions: string;
     rejectedContent: string[];
     evidence: Map<string, RawEvidence[]>;
-    pdfDocument: PdfDocumentConfig | null;
     proxySettings: ProxySettings;
   } = {
     reports: new Map(),
-    instructions: '',
     rejectedContent: [],
     evidence: new Map(),
-    pdfDocument: null,
     proxySettings: { ...DEFAULT_PROXY_SETTINGS }
   };
 
@@ -119,34 +114,6 @@ class StorageManager {
 
       CREATE INDEX IF NOT EXISTS idx_research_events_job ON research_events(job_id, created_at);
 
-      CREATE TABLE IF NOT EXISTS portfolio_assets (
-        asset_key TEXT PRIMARY KEY,
-        source_asset_id TEXT,
-        status TEXT,
-        title TEXT,
-        rejection_reason TEXT,
-        downloads INTEGER,
-        earnings REAL,
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        last_job_id TEXT,
-        record_json TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_portfolio_status ON portfolio_assets(status);
-
-      CREATE TABLE IF NOT EXISTS portfolio_change_log (
-        id TEXT PRIMARY KEY,
-        job_id TEXT NOT NULL,
-        asset_key TEXT NOT NULL,
-        change_type TEXT NOT NULL,
-        previous_json TEXT,
-        current_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_portfolio_changes_job ON portfolio_change_log(job_id, created_at);
-
       CREATE TABLE IF NOT EXISTS research_knowledge (
         fingerprint TEXT PRIMARY KEY,
         canonical_url TEXT NOT NULL,
@@ -179,14 +146,6 @@ class StorageManager {
 
       CREATE INDEX IF NOT EXISTS idx_knowledge_observations_job ON research_knowledge_observations(job_id, collected_at);
 
-      CREATE TABLE IF NOT EXISTS portfolio_snapshots (
-        id TEXT PRIMARY KEY,
-        job_id TEXT NOT NULL,
-        captured_at TEXT NOT NULL,
-        source_url TEXT,
-        summary_json TEXT NOT NULL
-      );
-
       CREATE TABLE IF NOT EXISTS opportunity_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT NOT NULL,
@@ -196,13 +155,27 @@ class StorageManager {
         created_at TEXT NOT NULL
       );
     `);
+
+    // Purge data captured by the retired private-profile sync feature.
+    this.db.exec(`
+      DROP TABLE IF EXISTS portfolio_assets;
+      DROP TABLE IF EXISTS portfolio_change_log;
+      DROP TABLE IF EXISTS portfolio_snapshots;
+      DELETE FROM user_settings WHERE key IN ('gemini_instructions', 'pdf_document_config');
+      DELETE FROM research_events
+        WHERE event_type LIKE 'portfolio_%'
+           OR LOWER(COALESCE(url, '')) LIKE '%contributor.stock.adobe.com%';
+    `);
+    try {
+      this.db.exec("UPDATE reports SET report_json = json_remove(report_json, '$.portfolio_summary') WHERE json_valid(report_json)");
+    } catch {
+      // Older SQLite builds may not include JSON helpers; reports remain local and are never sent to the model.
+    }
   }
 
   private loadSettings() {
     try {
-      this.memoryFallback.instructions = this.getInstructions();
       this.memoryFallback.rejectedContent = this.getRejectedContent();
-      this.memoryFallback.pdfDocument = this.getPdfDocument();
       this.memoryFallback.proxySettings = this.getProxySettings();
     } catch (e) {
       // ignore
@@ -215,18 +188,35 @@ class StorageManager {
       if (fs.existsSync(reportsFile)) {
         const raw = fs.readFileSync(reportsFile, 'utf8');
         const list: ResearchReport[] = JSON.parse(raw);
-        for (const r of list) {
-          this.memoryFallback.reports.set(r.job_id, r);
-        }
+        const cleaned = list.map((report: any) => {
+          const safe = { ...report };
+          delete safe.portfolio_summary;
+          safe.sources_processed = Array.isArray(safe.sources_processed)
+            ? safe.sources_processed.filter((name: string) => !/adobe contributor portfolio/i.test(String(name)))
+            : safe.sources_processed;
+          if (safe.source_status) delete safe.source_status['Adobe Contributor portfolio'];
+          if (Array.isArray(safe.evidence_sources)) {
+            safe.evidence_sources = safe.evidence_sources.filter((source: any) => !/contributor\.stock\.adobe\.com/i.test(String(source.url || '')));
+          }
+          if (safe.web_research && Array.isArray(safe.web_research.sources)) {
+            safe.web_research.sources = safe.web_research.sources.filter((source: any) => !/contributor\.stock\.adobe\.com/i.test(String(source.url || '')));
+          }
+          return safe as ResearchReport;
+        });
+        for (const report of cleaned) this.memoryFallback.reports.set(report.job_id, report);
+        fs.writeFileSync(reportsFile, JSON.stringify(cleaned, null, 2), 'utf8');
       }
 
       const settingsFile = path.join(DATA_DIR, 'settings_fallback.json');
       if (fs.existsSync(settingsFile)) {
         const parsed = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-        this.memoryFallback.instructions = parsed.instructions || '';
         this.memoryFallback.rejectedContent = parsed.rejectedContent || [];
-        if (parsed.pdfDocument) this.memoryFallback.pdfDocument = parsed.pdfDocument;
         if (parsed.proxySettings) this.memoryFallback.proxySettings = { ...DEFAULT_PROXY_SETTINGS, ...parsed.proxySettings };
+        // Rewrite legacy settings without personal instructions or uploaded PDF content.
+        fs.writeFileSync(settingsFile, JSON.stringify({
+          rejectedContent: this.memoryFallback.rejectedContent,
+          proxySettings: this.memoryFallback.proxySettings
+        }, null, 2), 'utf8');
       }
     } catch (e) {
       console.error('Error loading fallback storage files:', e);
@@ -247,9 +237,7 @@ class StorageManager {
         settingsFile,
         JSON.stringify(
           {
-            instructions: this.memoryFallback.instructions,
             rejectedContent: this.memoryFallback.rejectedContent,
-            pdfDocument: this.memoryFallback.pdfDocument,
             proxySettings: this.memoryFallback.proxySettings
           },
           null,
@@ -277,76 +265,6 @@ class StorageManager {
       return rows.map(row => ({ id: row.id, jobId: row.job_id, at: row.created_at, type: row.event_type, message: row.message, url: row.url || undefined, details: JSON.parse(row.details_json || '{}') }));
     } catch (error) { console.error('SQLite getResearchEvents error:', error); return []; }
   }
-
-  public upsertPortfolioAssets(jobId: string, assets: Array<Record<string, any>>, sourceUrl = '') {
-    if (!this.db) return;
-    const now = new Date().toISOString();
-    try {
-      const find = this.db.prepare('SELECT first_seen_at, source_asset_id, status, title, rejection_reason, downloads, earnings FROM portfolio_assets WHERE asset_key = ?');
-      const stmt = this.db.prepare(`INSERT INTO portfolio_assets (asset_key, source_asset_id, status, title, rejection_reason, downloads, earnings, first_seen_at, last_seen_at, last_job_id, record_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=COALESCE(excluded.downloads, portfolio_assets.downloads), earnings=COALESCE(excluded.earnings, portfolio_assets.earnings), last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
-      const change = this.db.prepare('INSERT INTO portfolio_change_log (id, job_id, asset_key, change_type, previous_json, current_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
-      for (const asset of assets) {
-        const sourceId = String(asset.assetId || asset.id || '').trim();
-        const stableDetails = [
-          String(asset.title || '').trim().toLowerCase(),
-          String(asset.href || '').trim().split('?')[0],
-          String(asset.thumbnail || '').trim().split('?')[0]
-        ].join('|');
-        const stableKey = sourceId
-          ? 'adobe:' + sourceId
-          : 'adobe:hash:' + crypto.createHash('sha256').update(stableDetails).digest('hex');
-        const old = find.get(stableKey) as any;
-        const downloads = asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : old?.downloads ?? null;
-        const earnings = asset.earnings !== null && asset.earnings !== undefined && Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : old?.earnings ?? null;
-        const normalized = {
-          sourceAssetId: sourceId || old?.source_asset_id || null,
-          status: String(asset.status || old?.status || 'UNKNOWN'),
-          title: String(asset.title || old?.title || ''),
-          rejectionReason: String(asset.rejectionReason || (asset.status === 'REJECTED' ? old?.rejection_reason || '' : '')),
-          downloads,
-          earnings,
-          sourceUrl
-        };
-        const previous = old ? {
-          status: old.status, title: old.title, rejectionReason: old.rejection_reason,
-          downloads: old.downloads, earnings: old.earnings
-        } : null;
-        const changes: string[] = [];
-        if (!old) changes.push('NEW_ASSET');
-        else {
-          if (String(previous?.status || '') !== normalized.status) changes.push('STATUS_CHANGED');
-          if (String(previous?.rejectionReason || '') !== normalized.rejectionReason) changes.push('REJECTION_REASON_CHANGED');
-          if (previous?.downloads !== normalized.downloads || previous?.earnings !== normalized.earnings) changes.push('PERFORMANCE_CHANGED');
-          if (String(previous?.title || '') !== normalized.title) changes.push('METADATA_CHANGED');
-        }
-        stmt.run(
-          stableKey, normalized.sourceAssetId, normalized.status, normalized.title,
-          normalized.rejectionReason, normalized.downloads, normalized.earnings,
-          old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, ...normalized })
-        );
-        if (changes.length) {
-          for (const changeType of changes) {
-            change.run(crypto.randomUUID(), jobId, stableKey, changeType, previous ? JSON.stringify(previous) : null, JSON.stringify(normalized), now);
-          }
-        }
-      }
-    } catch (error) { console.error('SQLite upsertPortfolioAssets error:', error); }
-  }
-
-  public getPortfolioChanges(jobId: string) {
-    if (!this.db) return [];
-    try {
-      const rows = this.db.prepare('SELECT * FROM portfolio_change_log WHERE job_id = ? ORDER BY created_at ASC').all(jobId) as any[];
-      return rows.map(row => ({
-        id: row.id, jobId: row.job_id, assetKey: row.asset_key, changeType: row.change_type,
-        previous: row.previous_json ? JSON.parse(row.previous_json) : null,
-        current: JSON.parse(row.current_json || '{}'), createdAt: row.created_at
-      }));
-    } catch (error) { console.error('SQLite getPortfolioChanges error:', error); return []; }
-  }
-
 
   public saveNormalizedResearchEvidence(jobId: string, records: Array<Record<string, any>>) {
     if (!this.db || !Array.isArray(records) || !records.length) return;
@@ -400,41 +318,6 @@ class StorageManager {
       console.error('SQLite getNormalizedEvidenceObservationCount error:', error);
       return 0;
     }
-  }
-
-  public savePortfolioSnapshot(jobId: string, sourceUrl: string, summary: Record<string, any>) {
-    if (!this.db) return;
-    try {
-      this.db.prepare('INSERT INTO portfolio_snapshots (id, job_id, captured_at, source_url, summary_json) VALUES (?, ?, ?, ?, ?)')
-        .run(crypto.randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
-    } catch (error) { console.error('SQLite savePortfolioSnapshot error:', error); }
-  }
-
-  public getLatestPortfolioSnapshot(jobId?: string) {
-    if (!this.db) return null;
-    try {
-      const row = jobId
-        ? this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots WHERE job_id = ? ORDER BY captured_at DESC LIMIT 1').get(jobId) as any
-        : this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots ORDER BY captured_at DESC LIMIT 1').get() as any;
-      if (!row) return null;
-      return { id: row.id, jobId: row.job_id, capturedAt: row.captured_at, sourceUrl: row.source_url, summary: JSON.parse(row.summary_json || '{}') };
-    } catch (error) { console.error('SQLite getLatestPortfolioSnapshot error:', error); return null; }
-  }
-
-  public getPortfolioAssetsForJob(jobId: string) {
-    if (!this.db) return [];
-    try {
-      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets WHERE last_job_id = ? ORDER BY last_seen_at DESC').all(jobId) as any[];
-      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
-    } catch (error) { console.error('SQLite getPortfolioAssetsForJob error:', error); return []; }
-  }
-
-  public getPortfolioAssets() {
-    if (!this.db) return [];
-    try {
-      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets ORDER BY last_seen_at DESC').all() as any[];
-      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
-    } catch (error) { console.error('SQLite getPortfolioAssets error:', error); return []; }
   }
 
   public saveReport(report: ResearchReport) {
@@ -679,97 +562,6 @@ class StorageManager {
       if (result.length >= limit) break;
     }
     return result;
-  }
-
-  // Instructions
-  public getInstructions(): string {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'gemini_instructions'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row) return row.value || '';
-      } catch (err) {
-        console.error('SQLite getInstructions error:', err);
-      }
-    }
-    return this.memoryFallback.instructions;
-  }
-
-  public saveInstructions(instructions: string): void {
-    const text = (instructions || '').slice(0, 1000);
-    this.memoryFallback.instructions = text;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('gemini_instructions', ?)
-        `);
-        stmt.run(text);
-      } catch (err) {
-        console.error('SQLite saveInstructions error:', err);
-      }
-    }
-  }
-
-  public clearInstructions(): void {
-    this.memoryFallback.instructions = '';
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        this.db.prepare("DELETE FROM user_settings WHERE key = 'gemini_instructions'").run();
-      } catch (err) {
-        console.error('SQLite clearInstructions error:', err);
-      }
-    }
-  }
-
-  // PDF Document & Directives
-  public getPdfDocument(): PdfDocumentConfig | null {
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare("SELECT value FROM user_settings WHERE key = 'pdf_document_config'");
-        const row = stmt.get() as { value: string } | undefined;
-        if (row && row.value) {
-          return JSON.parse(row.value) as PdfDocumentConfig;
-        }
-      } catch (err) {
-        console.error('SQLite getPdfDocument error:', err);
-      }
-    }
-    return this.memoryFallback.pdfDocument || null;
-  }
-
-  public savePdfDocument(doc: PdfDocumentConfig): void {
-    this.memoryFallback.pdfDocument = doc;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        const stmt = this.db.prepare(`
-          INSERT OR REPLACE INTO user_settings (key, value)
-          VALUES ('pdf_document_config', ?)
-        `);
-        stmt.run(JSON.stringify(doc));
-      } catch (err) {
-        console.error('SQLite savePdfDocument error:', err);
-      }
-    }
-  }
-
-  public clearPdfDocument(): void {
-    this.memoryFallback.pdfDocument = null;
-    this.persistFallback();
-
-    if (this.db) {
-      try {
-        this.db.prepare("DELETE FROM user_settings WHERE key = 'pdf_document_config'").run();
-      } catch (err) {
-        console.error('SQLite clearPdfDocument error:', err);
-      }
-    }
   }
 
   // Gemini Key & Model

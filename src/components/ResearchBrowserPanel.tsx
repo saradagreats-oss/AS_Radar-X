@@ -32,7 +32,8 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
     window.addEventListener('resize', syncBounds);
     window.addEventListener('scroll', syncBounds, true);
     const timer = window.setInterval(syncBounds, 700);
-    window.asRadarDesktop.showBrowser().catch(() => undefined);
+    // The backend explicitly shows the native browser only during a human handoff.
+    // During autonomous work this panel displays the latest read-only screenshot preview.
     window.asRadarDesktop.browserStatus().then(setBrowserStatus).catch(() => undefined);
     return () => {
       observer?.disconnect();
@@ -54,7 +55,19 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
   const latestPage = [...events].reverse().find((event) => event.type === 'page_visited');
   const latestUrl = latestPage?.url || browserStatus.url || '';
   const latestTitle = latestPage?.message || browserStatus.title || 'Research browser';
-  const latestActivity = [...events].filter((event) => ['agent_intent','browser_action','human_handoff','portfolio_synced'].includes(event.type)).slice(-5).reverse();
+  const latestScreenshotEvent = [...events].reverse().find((event) =>
+    event.type === 'browser_preview' || (event.type === 'browser_action' && event.details?.screenshot)
+  );
+  const screenshotFile = String(latestScreenshotEvent?.details?.screenshot || '').split('/').pop();
+  const screenshotUrl = jobId && screenshotFile
+    ? '/api/research/screenshots/' + encodeURIComponent(jobId) + '/' + encodeURIComponent(screenshotFile)
+    : '';
+  const visitedPages = events.filter((event) => event.type === 'page_visited');
+  const siteRecoveryEvents = events.filter((event) => event.type === 'site_retry' || event.type === 'site_skipped');
+  const skippedSites = events.filter((event) => event.type === 'site_skipped');
+  const instructionEvent = [...events].reverse().find((event) => event.type === 'agent_instructions');
+  const instructionPrompt = String(instructionEvent?.details?.prompt || '');
+  const latestActivity = [...events].filter((event) => ['agent_intent','browser_action','human_handoff','site_retry','site_skipped','gemini_request_started','gemini_wait','gemini_request_completed','gemini_request_error'].includes(event.type)).slice(-10).reverse();
 
   if (!visible) return null;
 
@@ -75,24 +88,78 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
               <i className="fa-solid fa-play mr-1"></i> DONE / CONTINUE
             </button>
           )}
-          <button onClick={onClose} className="p-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--text-main)]" title="Hide browser">
+          <button onClick={onClose} disabled={paused} className="p-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--text-main)] disabled:opacity-40 disabled:cursor-not-allowed" title={paused ? "Finish the requested browser step before hiding it" : "Hide browser"}>
             <i className="fa-solid fa-eye-slash"></i>
           </button>
         </div>
       </div>
       <div ref={hostRef} className="relative min-h-[350px] h-[min(54vh,560px)] bg-[#101319]">
-        {!window.asRadarDesktop?.isDesktop && (
+        {screenshotUrl ? (
+          <img
+            src={screenshotUrl}
+            alt="Latest read-only browser research preview"
+            className="absolute inset-0 w-full h-full object-contain"
+          />
+        ) : (
           <div className="absolute inset-0 grid place-items-center p-6 text-sm text-center text-[var(--text-dim)]">
+            {paused ? 'Complete the requested step in the browser, then press DONE / CONTINUE.' : 'Preparing the first browser capture…'}
+          </div>
+        )}
+        {!window.asRadarDesktop?.isDesktop && (
+          <div className="absolute inset-0 grid place-items-center p-6 text-sm text-center text-[var(--text-dim)] bg-[#101319]/80">
             The live embedded research browser is available in the Windows desktop EXE.
           </div>
         )}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 px-4 py-3 border-t border-[var(--border-subtle)] text-[0.66rem] font-mono">
-        <div><span className="text-[var(--text-dim)]">PAGES</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'page_visited').length}</div></div>
+        <div><span className="text-[var(--text-dim)]">SITES READ</span><div className="text-[var(--text-main)] font-bold">{visitedPages.length}</div></div>
         <div><span className="text-[var(--text-dim)]">ACTIONS</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'browser_action').length}</div></div>
-        <div><span className="text-[var(--text-dim)]">SCREENSHOTS</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'browser_action' && e.details?.screenshot).length}</div></div>
-        <div><span className="text-[var(--text-dim)]">PORTFOLIO</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'portfolio_synced').slice(-1)[0]?.details?.assetsFound ?? '—'} records</div></div>
+        <div><span className="text-[var(--text-dim)]">RETRIES</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'site_retry').length}</div></div>
+        <div><span className="text-[var(--text-dim)]">SKIPPED</span><div className="text-[var(--text-main)] font-bold">{skippedSites.length}</div></div>
       </div>
+      <details className="border-t border-[var(--border-subtle)] px-4 py-2">
+        <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">WEBSITES VISITED ({visitedPages.length})</summary>
+        <div className="pt-3 space-y-2">
+          {visitedPages.length === 0 ? (
+            <p className="text-[0.66rem] text-[var(--text-dim)]">No public page has been captured successfully yet.</p>
+          ) : [...visitedPages].reverse().map((event) => (
+            <div key={event.id} className="rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-2">
+              <a href={event.url || event.details?.url || '#'} target="_blank" rel="noreferrer" className="text-[0.68rem] text-[var(--accent-amber)] hover:underline break-all">
+                {event.message || event.url}
+              </a>
+              <div className="text-[0.60rem] text-[var(--text-dim)] font-mono mt-1 break-all">{event.url || event.details?.url}</div>
+              <div className="text-[0.60rem] text-[var(--text-dim)] mt-1">{new Date(event.at).toLocaleString()}</div>
+            </div>
+          ))}
+        </div>
+      </details>
+      {siteRecoveryEvents.length > 0 && (
+        <details className="border-t border-[var(--border-subtle)] px-4 py-2">
+          <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">SITE RETRIES &amp; SKIPPED WEBSITES ({siteRecoveryEvents.length})</summary>
+          <div className="pt-3 space-y-2">
+            {[...siteRecoveryEvents].reverse().slice(0, 30).map((event) => (
+              <div key={event.id} className="rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-[0.62rem] font-bold ${event.type === 'site_skipped' ? 'text-rose-300' : 'text-amber-300'}`}>{event.type === 'site_skipped' ? 'SKIPPED' : 'RETRY'}</span>
+                  <span className="text-[0.60rem] text-[var(--text-dim)] font-mono">{event.details?.attempt ? `Attempt ${event.details.attempt}/${event.details.maxAttempts || 3}` : ''}</span>
+                </div>
+                <div className="text-[0.66rem] text-[var(--text-main)] break-all mt-1">{event.details?.host || event.url || 'Unknown website'}</div>
+                {event.url && <a href={event.url} target="_blank" rel="noreferrer" className="text-[0.60rem] text-[var(--accent-amber)] hover:underline break-all">{event.url}</a>}
+                <p className="text-[0.62rem] text-[var(--text-dim)] mt-1 break-words">{event.details?.error || event.details?.reason || event.message}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {instructionPrompt && (
+        <details className="border-t border-[var(--border-subtle)] px-4 py-2">
+          <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">FULL COMPUTER-USE INSTRUCTIONS SENT TO GEMINI</summary>
+          <div className="pt-3">
+            <div className="text-[0.62rem] text-[var(--text-dim)] mb-2">This is the research prompt assembled by AS-Radar-X for this run. Gemini also receives its standard computer-use tool schema.</div>
+            <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-3 text-[0.62rem] leading-relaxed text-[var(--text-muted)]">{instructionPrompt}</pre>
+          </div>
+        </details>
+      )}
       {jobId && events.some((event) => event.type === 'browser_action' && event.details?.screenshot) && (
         <details className="border-t border-[var(--border-subtle)] px-4 py-2">
           <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">CAPTURED RESEARCH SCREENSHOTS</summary>

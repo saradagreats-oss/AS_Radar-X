@@ -16,6 +16,8 @@ let browserVisible = false;
 let browserTakeover = false;
 let lastBrowserBounds = null;
 let researchSession = null;
+let researchNavigationPending = false;
+let researchNavigationError = '';
 
 function sendBrowserEvent(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('as-radar:browser-event', payload);
@@ -26,6 +28,7 @@ function safeHttpUrl(value) {
     const url = new URL(String(value || ''));
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'contributor.stock.adobe.com' || host.endsWith('.contributor.stock.adobe.com')) return null;
     if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.test')) return null;
     if (net.isIP(host) === 4) {
       const p = host.split('.').map(Number);
@@ -38,7 +41,12 @@ function safeHttpUrl(value) {
 
 function attachResearchBrowser() {
   if (!researchSession) {
-    researchSession = session.fromPartition('persist:as-radar-research');
+    // In-memory partition: do not reuse pre-existing cookies or persist public browsing cookies on disk.
+    researchSession = session.fromPartition('as-radar-public-research-v2');
+    researchSession.webRequest.onBeforeRequest(
+      { urls: ['*://contributor.stock.adobe.com/*', '*://*.contributor.stock.adobe.com/*'] },
+      (_details, callback) => callback({ cancel: true })
+    );
     void applyChromiumProxy(desktopProxyConfig).catch((error) => console.error('[AS-Radar-X research proxy]', error));
   }
   if (!mainWindow || mainWindow.isDestroyed() || researchBrowser) return;
@@ -63,11 +71,21 @@ function attachResearchBrowser() {
   researchBrowser.webContents.on('will-navigate', (event, url) => {
     if (!safeHttpUrl(url)) event.preventDefault();
   });
+  researchBrowser.webContents.on('will-redirect', (event, navigationDetails) => {
+    if (!safeHttpUrl(navigationDetails.url)) event.preventDefault();
+  });
   const notify = () => sendBrowserEvent({ type: 'navigation', url: researchBrowser.webContents.getURL(), title: researchBrowser.webContents.getTitle(), loading: researchBrowser.webContents.isLoading() });
   researchBrowser.webContents.on('did-navigate', notify);
   researchBrowser.webContents.on('did-navigate-in-page', notify);
-  researchBrowser.webContents.on('did-start-loading', notify);
-  researchBrowser.webContents.on('did-stop-loading', notify);
+  researchBrowser.webContents.on('did-start-loading', () => { researchNavigationPending = true; researchNavigationError = ''; notify(); });
+  researchBrowser.webContents.on('did-stop-loading', () => { researchNavigationPending = false; notify(); });
+  researchBrowser.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    researchNavigationPending = false;
+    researchNavigationError = `Browser page failed to load: ${errorDescription || 'unknown network error'} (${errorCode}) · ${validatedURL || researchBrowser.webContents.getURL()}`;
+    notify();
+    sendBrowserEvent({ type: 'error', message: researchNavigationError, url: validatedURL || '' });
+  });
   researchBrowser.webContents.on('page-title-updated', notify);
   researchBrowser.webContents.on('render-process-gone', (_event, details) => sendBrowserEvent({ type: 'error', message: 'Research browser renderer stopped.', details }));
   mainWindow.on('resize', updateResearchBrowserBounds);
@@ -85,8 +103,69 @@ function updateResearchBrowserBounds(_event, bounds) {
   if (researchBrowser) researchBrowser.setBounds(lastBrowserBounds);
 }
 
+function beginResearchNavigation(url) {
+  if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  researchNavigationPending = true;
+  researchNavigationError = '';
+  const wc = researchBrowser.webContents;
+  void wc.loadURL(url).catch((error) => {
+    researchNavigationPending = false;
+    researchNavigationError = `Browser navigation failed: ${error && error.message ? error.message : String(error)}`;
+    sendBrowserEvent({ type: 'error', message: researchNavigationError, url });
+  });
+}
+
+async function waitForResearchPageLoad(timeoutMs = 20000) {
+  if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  const wc = researchBrowser.webContents;
+  if (researchNavigationError) {
+    const message = researchNavigationError;
+    researchNavigationError = '';
+    throw new Error(message);
+  }
+  if (!researchNavigationPending && !wc.isLoading()) return;
+
+  await new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      wc.removeListener('did-stop-loading', onStop);
+      wc.removeListener('did-fail-load', onFail);
+    };
+    const onStop = () => {
+      if (wc.isLoading() || researchNavigationPending) return;
+      cleanup();
+      if (researchNavigationError) reject(new Error(researchNavigationError));
+      else resolve();
+    };
+    const onFail = (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      researchNavigationPending = false;
+      researchNavigationError = `Browser page failed to load: ${errorDescription || 'unknown network error'} (${errorCode}) · ${validatedURL || wc.getURL()}`;
+      cleanup();
+      reject(new Error(researchNavigationError));
+    };
+    timer = setTimeout(() => {
+      researchNavigationPending = false;
+      cleanup();
+      try { wc.stop(); } catch { /* the page may already have stopped */ }
+      reject(new Error(`Browser page is still loading after ${Math.round(timeoutMs / 1000)} seconds: ${wc.getURL() || 'unknown URL'}`));
+    }, timeoutMs);
+    wc.on('did-stop-loading', onStop);
+    wc.on('did-fail-load', onFail);
+    onStop();
+  });
+
+  if (researchNavigationError) {
+    const message = researchNavigationError;
+    researchNavigationError = '';
+    throw new Error(message);
+  }
+}
+
 async function browserSnapshot() {
   if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  await waitForResearchPageLoad();
   const snapshot = await researchBrowser.webContents.executeJavaScript(`(() => {
     const active = document.activeElement;
     const focusedPassword = !!active && (active.tagName === 'INPUT' && active.type === 'password' || active.isContentEditable && active.closest('form')?.querySelector('input[type=password]'));
@@ -95,10 +174,10 @@ async function browserSnapshot() {
     const links = [...document.querySelectorAll('a[href]')].slice(0, 250).map(a => ({text:(a.innerText||a.getAttribute('aria-label')||'').trim().slice(0,240),href:a.href})).filter(a => a.href && a.text);
     const images = [...document.images].slice(0, 160).map(i => ({src:i.currentSrc||i.src,alt:i.alt||'',width:i.naturalWidth||i.width||0,height:i.naturalHeight||i.height||0})).filter(i=>i.src);
     const tables = [...document.querySelectorAll('table')].slice(0,20).map(t=>[...t.querySelectorAll('tr')].slice(0,100).map(r=>(r.innerText||'').trim().slice(0,1000)));
-    const portfolioRows = [...document.querySelectorAll('tr,[role=row],[data-testid*=asset],[class*=asset-card],[class*=AssetCard]')].slice(0,600).map(e=>{const t=(e.innerText||'').trim().slice(0,1200);const a=e.querySelector('a[href]');const img=e.querySelector('img');return {text:t,href:a?.href||'',title:a?.getAttribute('title')||img?.alt||'',image:img?.currentSrc||img?.src||''};}).filter(r=>r.text.length>12);\n    return {url:location.href,title:document.title,text,headings,links,images,tables,portfolioRows,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor|verification code|one[- ]time code|authenticator|security code/i.test(text),capturedAt:new Date().toISOString()};
+return {url:location.href,title:document.title,text,headings,links,images,tables,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor|verification code|one[- ]time code|authenticator|security code/i.test(text),capturedAt:new Date().toISOString()};
   })()`, true);
   let screenshotBase64;
-  if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint && browserVisible) {
+  if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint) {
     const image = await researchBrowser.webContents.capturePage();
     screenshotBase64 = image.toJPEG(65).toString('base64');
   }
@@ -112,8 +191,8 @@ async function executeBrowserAction(action, args = {}) {
     case 'navigate': {
       const url = safeHttpUrl(args.url);
       if (!url) throw new Error('Only public HTTP/HTTPS navigation is allowed.');
-      await wc.loadURL(url);
-      return { url: wc.getURL(), title: wc.getTitle() };
+      beginResearchNavigation(url);
+      return { url, loading: true };
     }
     case 'pointer': {
       const bounds = researchBrowser.getBounds();
@@ -192,8 +271,8 @@ async function handleBrowserRequest(message) {
       researchBrowser.setVisible(true);
       updateResearchBrowserBounds();
       const url = args.url ? safeHttpUrl(args.url) : null;
-      if (url && url !== researchBrowser.webContents.getURL()) await researchBrowser.webContents.loadURL(url);
-      result = { visible: true, url: researchBrowser.webContents.getURL(), title: researchBrowser.webContents.getTitle() };
+      if (url && url !== researchBrowser.webContents.getURL()) beginResearchNavigation(url);
+      result = { visible: true, url: url || researchBrowser.webContents.getURL(), loading: researchNavigationPending };
     } else if (method === 'hide') {
       browserVisible = false;
       if (researchBrowser) researchBrowser.setVisible(false);

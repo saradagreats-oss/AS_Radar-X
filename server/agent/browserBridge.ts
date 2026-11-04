@@ -8,7 +8,6 @@ export interface BrowserSnapshot {
   links: Array<{ text: string; href: string }>;
   images: Array<{ src: string; alt: string; width: number; height: number }>;
   tables: string[][];
-  portfolioRows?: Array<{ text: string; href: string; title: string; image: string }>;
   passwordFieldCount: number;
   verificationHint: boolean;
   capturedAt: string;
@@ -55,7 +54,7 @@ export const browserBridge = {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId);
-        reject(new Error('The embedded browser did not respond in time.'));
+        reject(new Error(`The embedded browser "${method}" request did not respond within ${Math.round(timeoutMs / 1000)} seconds.`));
       }, timeoutMs);
       pending.set(requestId, { resolve, reject, timer });
       try {
@@ -74,7 +73,7 @@ export const browserBridge = {
   },
 
   async show(url?: string) {
-    return this.request('show', { url }, 45000);
+    return this.request('show', { url }, 10000);
   },
 
   async hide() {
@@ -86,11 +85,11 @@ export const browserBridge = {
   },
 
   async capture(): Promise<BrowserCapture> {
-    return this.request('capture', {}, 30000);
+    return this.request('capture', {}, 35000);
   },
 
   async execute(action: string, args: Record<string, any>) {
-    return this.request('action', { action, args }, 45000);
+    return this.request('action', { action, args }, 20000);
   },
 
   async status() {
