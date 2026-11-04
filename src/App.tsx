@@ -287,6 +287,15 @@ export default function App() {
     };
   }, [isResearching]);
 
+  useEffect(() => {
+    if (isResearching && activeJobId) {
+      eventPollRef.current = setInterval(() => { void loadResearchEvents(activeJobId); }, 1400);
+    } else if (eventPollRef.current) {
+      clearInterval(eventPollRef.current);
+    }
+    return () => { if (eventPollRef.current) clearInterval(eventPollRef.current); };
+  }, [isResearching, activeJobId]);
+
   // Instructions
   const loadInstructions = async () => {
     try {
@@ -1009,59 +1018,17 @@ export default function App() {
                   AS-RADAR-X
                 </h1>
                 <span className="text-[0.65rem] px-2 py-0.5 rounded bg-[var(--bg-input)] border border-[var(--border-subtle)] font-mono text-[var(--accent-amber)]">
-                  v2.0 DISCUSSIONS
+                  AUTONOMOUS RESEARCH
                 </span>
               </div>
               <p className="text-xs text-[var(--text-muted)] font-mono">
-                Stock Opportunity Intelligence Backed by Reddit &amp; Discord Human Discussions
+                Evidence-driven stock market &amp; portfolio intelligence
               </p>
             </div>
           </div>
 
           {/* Quick Status Badges & Theme Toggle */}
           <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
-            {/* Platform Data Toggle Badge */}
-            <button
-              onClick={handleTogglePlatformData}
-              className={`py-1.5 px-3 rounded flex items-center gap-1.5 border transition ${
-                platformDataEnabled
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                  : 'bg-zinc-800 border-zinc-700 text-zinc-400'
-              }`}
-              title="Click to toggle Platform Data collection mode"
-            >
-              <i className={`fa-solid ${platformDataEnabled ? 'fa-toggle-on text-emerald-400' : 'fa-toggle-off'}`}></i>
-              <span className="text-[0.68rem] font-bold">PLATFORM DATA: {platformDataEnabled ? 'ON' : 'OFF'}</span>
-            </button>
-
-            {/* Reddit Status Badge */}
-            <span
-              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
-                !platformDataEnabled
-                  ? 'bg-zinc-800 border-zinc-700 text-zinc-500'
-                  : redditConfig.connected
-                  ? 'bg-orange-500/10 border-orange-500/30 text-orange-400'
-                  : 'bg-zinc-800/80 border-zinc-700 text-zinc-400'
-              }`}
-            >
-              <i className="fa-brands fa-reddit text-orange-400"></i>
-              <span>REDDIT: {!platformDataEnabled ? 'DISABLED' : redditConfig.connected ? 'READY' : 'UNCONFIGURED'}</span>
-            </span>
-
-            {/* Discord Status Badge */}
-            <span
-              className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
-                !platformDataEnabled
-                  ? 'bg-zinc-800 border-zinc-700 text-zinc-500'
-                  : discordConfig.connected
-                  ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
-                  : 'bg-zinc-800/80 border-zinc-700 text-zinc-400'
-              }`}
-            >
-              <i className="fa-brands fa-discord text-indigo-400"></i>
-              <span>DISCORD: {!platformDataEnabled ? 'DISABLED' : discordConfig.connected ? 'READY' : 'UNCONFIGURED'}</span>
-            </span>
-
             {/* Gemini AI Status Badge */}
             <span
               className={`py-1.5 px-2.5 rounded flex items-center gap-1.5 border text-[0.68rem] font-bold uppercase ${
@@ -1103,7 +1070,7 @@ export default function App() {
         <nav className="flex items-center gap-2 border-b border-[var(--border-color)] mb-6 overflow-x-auto pb-1">
           {[
             { id: 'research', label: 'RESEARCH PIPELINE', icon: 'fa-microscope' },
-            { id: 'sources', label: 'HUMAN SOURCES', icon: 'fa-comments' },
+            { id: 'portfolio', label: 'ADOBE PORTFOLIO', icon: 'fa-images' },
             { id: 'instructions', label: 'INSTRUCTIONS & REJECTIONS', icon: 'fa-sliders' },
             { id: 'history', label: 'HISTORY', icon: 'fa-clock-rotate-left' },
             { id: 'proxy', label: 'PROXY', icon: 'fa-shield-halved' },
@@ -1129,82 +1096,21 @@ export default function App() {
              ======================================================== */}
         {activeTab === 'research' && (
           <div className="space-y-6">
-            {/* Control Bar */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-4">
-                {/* Photo Count */}
-                <div>
-                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">
-                    Photo Opportunities
-                  </label>
-                  <select
-                    value={photoCount}
-                    disabled={isResearching}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value, 10);
-                      setPhotoCount(v);
-                      localStorage.setItem('as_radar_x_photo_count', String(v));
-                    }}
-                    className="bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
-                  >
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                      <option key={n} value={n}>
-                        {n} Photos
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Video Count */}
-                <div>
-                  <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">
-                    Video Opportunities
-                  </label>
-                  <select
-                    value={videoCount}
-                    disabled={isResearching}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value, 10);
-                      setVideoCount(v);
-                      localStorage.setItem('as_radar_x_video_count', String(v));
-                    }}
-                    className="bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
-                  >
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                      <option key={n} value={n}>
-                        {n} Videos
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Mode Indicator */}
-                <div className="hidden lg:block pl-2 border-l border-[var(--border-subtle)]">
-                  <span className="text-[0.65rem] text-[var(--text-dim)] font-mono block">Data Pipeline Mode</span>
-                  <span className="text-xs font-mono font-bold text-[var(--accent-amber)]">
-                    {platformDataEnabled ? 'Reddit & Discord Discussions + Gemini' : 'Pure AI Intelligence & Historical Memory'}
-                  </span>
-                </div>
+            {/* Research controls */}
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-5 shadow-lg space-y-4">
+              <div>
+                <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">Research objective / niche</label>
+                <textarea value={researchNiche} disabled={isResearching} onChange={(e) => { setResearchNiche(e.target.value); localStorage.setItem('as_radar_x_research_niche', e.target.value); }} placeholder="Leave blank for autonomous discovery across industries, or describe the market question to investigate..." rows={2} className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded-lg p-3 text-xs font-mono text-[var(--text-main)] outline-none resize-y" />
+                <p className="text-[0.64rem] text-[var(--text-dim)] mt-1">Gemini discovers its own search queries, sites, listings and follow-up pages. No fixed niche or URL watchlist.</p>
               </div>
-
-              {/* Start Button */}
-              <div className="flex items-center gap-3">
-                {isResearching && (
-                  <div className="font-mono text-xs text-[var(--text-dim)]">
-                    Elapsed: <span className="text-[var(--accent-amber)] font-bold">{formatTimer(elapsedSeconds)}</span>
-                  </div>
-                )}
-                <button
-                  onClick={handleStartResearch}
-                  disabled={isResearching || (photoCount === 0 && videoCount === 0)}
-                  className="py-2.5 px-6 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase tracking-wider rounded shadow-md transition flex items-center gap-2"
-                >
-                  <i className={`fa-solid ${isResearching ? 'fa-spinner fa-spin' : 'fa-play'}`}></i>
-                  <span>{isResearching ? 'RESEARCHING...' : 'RUN RESEARCH PIPELINE'}</span>
-                </button>
+              <div className="flex flex-wrap items-end gap-4">
+                <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Photo ideas</label><select value={photoCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setPhotoCount(v); localStorage.setItem('as_radar_x_photo_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[0,1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
+                <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Video ideas</label><select value={videoCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setVideoCount(v); localStorage.setItem('as_radar_x_video_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[0,1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
+                <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Tags per idea</label><select value={tagCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setTagCount(v); localStorage.setItem('as_radar_x_tag_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[5,10,15,20,25,30,35,40,50].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
+                <details className="flex-1 min-w-[230px]"><summary className="cursor-pointer text-[0.68rem] font-mono text-[var(--text-muted)] py-2">Optional title instructions</summary><textarea value={titleInstructions} disabled={isResearching} onChange={(e) => { setTitleInstructions(e.target.value); localStorage.setItem('as_radar_x_title_instructions', e.target.value); }} rows={2} placeholder="Leave blank to infer style from marketplace titles observed during this research." className="w-full mt-1 bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)]" /></details>
+                <div className="ml-auto flex items-center gap-3">{isResearching && <div className="font-mono text-xs text-[var(--text-dim)]">Elapsed <b className="text-[var(--accent-amber)]">{formatTimer(elapsedSeconds)}</b></div>}<button onClick={handleStartResearch} disabled={isResearching || (photoCount === 0 && videoCount === 0)} className="py-2.5 px-6 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase tracking-wider rounded shadow-md transition flex items-center gap-2"><i className={'fa-solid ' + (isResearching ? 'fa-spinner fa-spin' : 'fa-play')}></i><span>{isResearching ? 'RESEARCHING...' : 'START DEEP RESEARCH'}</span></button></div>
               </div>
             </div>
-
             {/* Error Banner */}
             {errorInfo && (
               <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-xs font-mono text-red-300 space-y-2">
@@ -1230,54 +1136,14 @@ export default function App() {
               </div>
             )}
 
-            {/* In-Progress Pipeline Card */}
             {isResearching && (
-              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4 font-mono text-xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-[var(--accent-amber)] font-bold uppercase">
-                    <span className="w-2 h-2 rounded-full bg-[var(--accent-amber)] animate-ping"></span>
-                    <span>{progressMessage}</span>
-                  </div>
-                  <span className="text-[var(--text-dim)]">{progressPercent}%</span>
-                </div>
-
-                {/* Progress Bar */}
-                <div className="w-full h-2 bg-[var(--bg-input)] rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-[var(--accent-amber)] transition-all duration-300 ease-out"
-                    style={{ width: `${progressPercent}%` }}
-                  ></div>
-                </div>
-
-                {/* Stage Steps */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 pt-2">
-                  {RESEARCH_STAGES.map((st) => {
-                    const isDone = RESEARCH_STAGES.findIndex((s) => s.id === researchStage) > RESEARCH_STAGES.findIndex((s) => s.id === st.id);
-                    const isCurrent = researchStage === st.id;
-                    return (
-                      <div
-                        key={st.id}
-                        className={`p-2 rounded text-[0.62rem] border transition flex items-center gap-1.5 ${
-                          isDone
-                            ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-400'
-                            : isCurrent
-                            ? 'bg-amber-500/10 border-amber-500/30 text-[var(--accent-amber)] font-bold'
-                            : 'bg-[var(--bg-input)] border-[var(--border-subtle)] text-[var(--text-dim)]'
-                        }`}
-                      >
-                        <i
-                          className={`fa-solid ${
-                            isDone ? 'fa-check text-emerald-400' : isCurrent ? 'fa-spinner fa-spin text-[var(--accent-amber)]' : 'fa-circle text-[0.4rem]'
-                          }`}
-                        ></i>
-                        <span className="truncate">{st.label}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-4 shadow-lg space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2 text-[var(--accent-amber)] font-bold text-xs"><span className="w-2 h-2 rounded-full bg-[var(--accent-amber)] animate-pulse"></span>{progressMessage}</div><span className="font-mono text-xs text-[var(--text-dim)]">{progressPercent}% · {formatTimer(elapsedSeconds)}</span></div>
+                <div className="w-full h-2 bg-[var(--bg-input)] rounded-full overflow-hidden"><div className="h-full bg-[var(--accent-amber)] transition-all" style={{ width: progressPercent + '%' }} /></div>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[0.64rem] text-[var(--text-dim)] font-mono"><span>Stage: {RESEARCH_STAGES.find(stage => stage.id === researchStage)?.label || researchStage}</span><span>{researchEvents.filter(event => event.type === 'page_visited').length} pages · {researchEvents.filter(event => event.type === 'browser_action').length} browser actions</span></div>
               </div>
             )}
-
+            <ResearchBrowserPanel jobId={activeJobId} events={researchEvents} paused={researchStage === 'PAUSED_FOR_USER'} visible={showBrowser} onContinue={handleContinueResearch} onClose={() => { setShowBrowser(false); window.asRadarDesktop?.hideBrowser().catch(() => undefined); }} />
             {/* Report Display */}
             {currentReport && !isResearching && (
               <div className="space-y-6 animate-fade-in">
@@ -1321,7 +1187,7 @@ export default function App() {
                         className="py-1.5 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded font-mono text-xs text-[var(--text-main)] flex items-center gap-2 transition"
                       >
                         <i className="fa-solid fa-database text-[var(--accent-amber)]"></i>
-                        <span>Inspect Raw SQLite Evidence</span>
+                        <span>Inspect Research Audit Log</span>
                       </button>
                     </div>
                   </div>
@@ -1416,10 +1282,10 @@ export default function App() {
               <div className="p-12 text-center bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg font-mono space-y-3">
                 <i className="fa-solid fa-compass text-3xl text-[var(--accent-amber)]/60 mb-2"></i>
                 <h3 className="text-sm font-bold font-brand text-[var(--text-main)] uppercase">
-                  Ready to Extract Market Signals
+                  Ready for Deep Market Research
                 </h3>
                 <p className="text-xs text-[var(--text-dim)] max-w-lg mx-auto leading-relaxed">
-                  Configure photo and video targets above, verify your Reddit/Discord sources in Settings, and click{' '}
+                  Set photo/video targets above, leave Adobe Contributor signed in when the browser opens, then click{' '}
                   <strong className="text-[var(--accent-amber)]">&quot;RUN RESEARCH PIPELINE&quot;</strong> to generate data-driven stock content opportunities.
                 </p>
               </div>
@@ -1427,279 +1293,13 @@ export default function App() {
           </div>
         )}
 
-        {/* ========================================================
-             TAB 2: HUMAN SOURCES (REDDIT & DISCORD)
-             ======================================================== */}
-        {activeTab === 'sources' && (
-          <div className="space-y-6">
-            {/* Top Overview Card */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
-                  <i className="fa-solid fa-comments text-[var(--accent-amber)]"></i>
-                  <span>Live Human Discussion Sources (Reddit &amp; Discord)</span>
-                </h3>
-                <p className="text-xs text-[var(--text-dim)] font-mono mt-0.5">
-                  Direct inspection of community subreddits and Discord bot channel streams.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => runSourcesProbe(true)}
-                  disabled={isProbing}
-                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase rounded transition flex items-center gap-2"
-                >
-                  <i className={`fa-solid ${isProbing ? 'fa-spinner fa-spin' : 'fa-arrows-rotate'}`}></i>
-                  <span>{isProbing ? 'PROBING...' : 'PROBE LIVE DATA'}</span>
-                </button>
-              </div>
+        {activeTab === 'portfolio' && (
+          <div className="space-y-4">
+            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-4">
+              <h2 className="text-sm font-bold text-[var(--text-main)] uppercase">Adobe Contributor Portfolio</h2>
+              <p className="text-[0.68rem] text-[var(--text-dim)] mt-1">Visible portfolio records, accepted/rejected/pending statuses and any displayed performance fields are synced automatically during research. Unknown values stay blank rather than being guessed.</p>
             </div>
-
-            {/* Sources Cards Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Reddit Card */}
-              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow space-y-3 font-mono text-xs">
-                <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                  <div className="flex items-center gap-2">
-                    <i className="fa-brands fa-reddit text-orange-500 text-lg"></i>
-                    <span className="font-bold font-brand text-sm uppercase text-[var(--text-main)]">REDDIT COMMUNITIES</span>
-                  </div>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[0.62rem] font-bold uppercase ${
-                      !platformDataEnabled
-                        ? 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                        : redditConfig.connected
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                    }`}
-                  >
-                    {!platformDataEnabled ? 'DISABLED' : redditConfig.connected ? 'CONNECTED' : 'NOT CONNECTED'}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 text-[0.72rem]">
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Monitored Subreddits:</span>
-                    <span className="text-[var(--text-main)] font-bold">{redditConfig.subreddits?.length || 0} subreddits</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Research Timeframe:</span>
-                    <span className="text-[var(--accent-amber)] font-bold">{redditConfig.timeframe || '24h'} window</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Extracted Discussions:</span>
-                    <span className="text-emerald-400 font-bold">{redditConfig.collectedCount || 0} records</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Last Harvest:</span>
-                    <span className="text-[var(--text-muted)]">
-                      {redditConfig.lastCollectedAt ? new Date(redditConfig.lastCollectedAt).toLocaleTimeString() : 'Pending'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-1">
-                  {(redditConfig.subreddits || []).slice(0, 6).map((sub) => (
-                    <span key={sub} className="py-0.5 px-2 bg-[var(--bg-input)] rounded text-[0.65rem] text-[var(--text-muted)]">
-                      r/{sub}
-                    </span>
-                  ))}
-                  {(redditConfig.subreddits || []).length > 6 && (
-                    <span className="text-[0.65rem] text-[var(--text-dim)] p-0.5">
-                      +{(redditConfig.subreddits || []).length - 6} more
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Discord Card */}
-              <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow space-y-3 font-mono text-xs">
-                <div className="flex items-center justify-between pb-2 border-b border-[var(--border-subtle)]">
-                  <div className="flex items-center gap-2">
-                    <i className="fa-brands fa-discord text-indigo-400 text-lg"></i>
-                    <span className="font-bold font-brand text-sm uppercase text-[var(--text-main)]">DISCORD BOT STREAMS</span>
-                  </div>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[0.62rem] font-bold uppercase ${
-                      !platformDataEnabled
-                        ? 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                        : discordConfig.connected
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                    }`}
-                  >
-                    {!platformDataEnabled ? 'DISABLED' : discordConfig.connected ? 'CONNECTED' : 'NOT CONNECTED'}
-                  </span>
-                </div>
-
-                <div className="space-y-1.5 text-[0.72rem]">
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Configured Guilds / Servers:</span>
-                    <span className="text-[var(--text-main)] font-bold">{discordConfig.guilds?.length || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Monitored Channels:</span>
-                    <span className="text-[var(--text-main)] font-bold">
-                      {discordConfig.guilds?.[0]?.channels?.length || 0} channels
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Research Timeframe:</span>
-                    <span className="text-[var(--accent-cyan)] font-bold">{discordConfig.timeframe || '24h'} window</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-dim)]">Extracted Messages:</span>
-                    <span className="text-emerald-400 font-bold">{discordConfig.collectedCount || 0} messages</span>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-1">
-                  {(discordConfig.guilds?.[0]?.channels || []).map((ch: any) => (
-                    <span key={ch.id} className="py-0.5 px-2 bg-[var(--bg-input)] rounded text-[0.65rem] text-[var(--text-muted)]">
-                      #{ch.name || ch.id}
-                    </span>
-                  ))}
-                  {!(discordConfig.guilds?.[0]?.channels || []).length && (
-                    <span className="text-[0.65rem] text-[var(--text-dim)]">No channels configured in Settings.</span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Extracted Signals Stream */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg">
-              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-4 mb-4 border-b border-[var(--border-subtle)]">
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-bold font-brand uppercase text-[var(--text-main)]">
-                    <i className="fa-solid fa-stream text-[var(--accent-amber)]"></i>
-                    Discussion Signal Stream
-                  </div>
-                  <span className="text-[0.68rem] text-[var(--text-dim)] font-mono">
-                    Real extracted human discussion points feeding the Gemini market intelligence analyst.
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                  <div className="flex items-center gap-1 bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-1">
-                    {['ALL', 'Reddit', 'Discord'].map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => setProbeFilter(f)}
-                        className={`py-1 px-2.5 rounded text-[0.68rem] font-mono font-bold transition ${
-                          probeFilter === f
-                            ? 'bg-[var(--accent-amber)] text-black'
-                            : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
-                        }`}
-                      >
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-
-                  <input
-                    type="text"
-                    value={probeSearch}
-                    onChange={(e) => setProbeSearch(e.target.value)}
-                    placeholder="Search keywords or titles..."
-                    className="bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1 px-2.5 text-xs font-mono text-[var(--text-main)] outline-none"
-                  />
-                </div>
-              </div>
-
-              {/* Signals Cards */}
-              {(() => {
-                const allSamples: any[] = [];
-                if (probeData?.sources) {
-                  for (const src of Object.values(probeData.sources) as any[]) {
-                    if (Array.isArray(src.evidenceSample)) {
-                      allSamples.push(...src.evidenceSample);
-                    }
-                  }
-                }
-
-                const filtered = allSamples.filter((item) => {
-                  if (probeFilter !== 'ALL' && item.source !== probeFilter) return false;
-                  if (probeSearch.trim()) {
-                    const term = probeSearch.toLowerCase();
-                    const titleMatch = (item.raw_title || '').toLowerCase().includes(term);
-                    const descMatch = (item.raw_description || '').toLowerCase().includes(term);
-                    const kwMatch = (item.raw_keywords || []).some((k: string) => k.toLowerCase().includes(term));
-                    return titleMatch || descMatch || kwMatch;
-                  }
-                  return true;
-                });
-
-                if (isProbing) {
-                  return (
-                    <div className="py-12 text-center text-xs font-mono text-[var(--accent-amber)]">
-                      <i className="fa-solid fa-spinner fa-spin text-xl mb-2"></i>
-                      <div>Probing live Reddit &amp; Discord endpoints and extracting discussion tokens...</div>
-                    </div>
-                  );
-                }
-
-                if (!filtered.length) {
-                  return (
-                    <div className="p-8 text-center bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded font-mono text-xs text-[var(--text-dim)]">
-                      {probeData
-                        ? 'No discussions matched your filter criteria.'
-                        : 'No live probe executed yet. Click "PROBE LIVE DATA" above to inspect live signals.'}
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {filtered.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3.5 bg-[var(--bg-input)] border border-[var(--border-subtle)] hover:border-[var(--accent-amber)]/40 rounded transition font-mono flex flex-col justify-between"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between gap-2 mb-1.5">
-                            <span
-                              className={`text-[0.62rem] font-bold px-2 py-0.5 rounded uppercase ${
-                                item.source === 'Reddit'
-                                  ? 'text-orange-400 bg-orange-500/10 border border-orange-500/20'
-                                  : 'text-indigo-400 bg-indigo-500/10 border border-indigo-500/20'
-                              }`}
-                            >
-                              {item.source}
-                            </span>
-                            <span className="text-[0.62rem] text-[var(--text-dim)] uppercase">
-                              {item.evidence_type?.replace(/_/g, ' ') || 'Discussion'}
-                            </span>
-                          </div>
-
-                          <h4 className="text-xs font-semibold text-[var(--text-main)] mb-1.5 leading-relaxed">
-                            {item.raw_title}
-                          </h4>
-
-                          {item.raw_description && (
-                            <p className="text-[0.7rem] text-[var(--text-muted)] mb-2 line-clamp-3 leading-normal">
-                              {item.raw_description}
-                            </p>
-                          )}
-                        </div>
-
-                        <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-[0.62rem] text-[var(--text-dim)]">
-                          <a
-                            href={item.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:text-[var(--accent-amber)] truncate max-w-[200px]"
-                          >
-                            {item.url}
-                          </a>
-                          <span>{item.collected_at ? new Date(item.collected_at).toLocaleTimeString() : ''}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
+            <PortfolioTable refreshKey={portfolioRefreshKey} />
           </div>
         )}
 
@@ -1980,7 +1580,7 @@ export default function App() {
                     <th className="p-3">Job ID</th>
                     <th className="p-3">Date</th>
                     <th className="p-3">Photos / Videos</th>
-                    <th className="p-3">Major Discussion Topics</th>
+                    <th className="p-3">Research Focus</th>
                     <th className="p-3">Status</th>
                     <th className="p-3 text-right">Action</th>
                   </tr>
@@ -2116,62 +1716,6 @@ export default function App() {
              ======================================================== */}
         {activeTab === 'settings' && (
           <div className="space-y-6 max-w-4xl">
-            {/* PLATFORM DATA MASTER SWITCH */}
-            <div className="bg-[var(--bg-card)] border-2 border-[var(--accent-amber)]/40 rounded-lg p-5 shadow-xl space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
-                    <i className="fa-solid fa-network-wired text-[var(--accent-amber)]"></i>
-                    <span>PLATFORM DATA (REDDIT &amp; DISCORD LIVE EXTRACTION)</span>
-                  </h3>
-                  <p className="text-xs text-[var(--text-muted)] font-mono mt-1 leading-relaxed">
-                    Controls whether AS-Radar-X connects to Reddit &amp; Discord to harvest raw human discussion needs, creator complaints, and missing assets.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleTogglePlatformData}
-                  className={`py-2 px-5 rounded font-mono text-xs font-bold uppercase tracking-wider transition flex items-center gap-2 shadow-md ${
-                    platformDataEnabled
-                      ? 'bg-emerald-500 hover:bg-emerald-400 text-black'
-                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-600'
-                  }`}
-                >
-                  <i className={`fa-solid ${platformDataEnabled ? 'fa-toggle-on text-base' : 'fa-toggle-off text-base'}`}></i>
-                  <span>PLATFORM DATA: {platformDataEnabled ? 'ON' : 'OFF'}</span>
-                </button>
-              </div>
-
-              <div className="p-3 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)] font-mono text-xs text-[var(--text-dim)]">
-                {platformDataEnabled ? (
-                  <span className="text-emerald-400">
-                    &bull; <strong>ON (Default):</strong> Research pipeline extracts discussions from your configured subreddits &amp; Discord channels and feeds real human signals into Gemini.
-                  </span>
-                ) : (
-                  <span className="text-amber-400">
-                    &bull; <strong>OFF:</strong> Skips Reddit &amp; Discord network calls. Operates using Gemini strategic AI intelligence, historical database memory, and custom instructions.
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* REDDIT RESEARCH SOURCES SECTION */}
-            <RedditConfigSection
-              config={redditConfig}
-              onSave={handleSaveRedditConfig}
-              showToast={showToast}
-              getApiUrl={getApiUrl}
-            />
-
-            {/* DISCORD RESEARCH SOURCES SECTION */}
-            <DiscordConfigSection
-              config={discordConfig}
-              onSave={handleSaveDiscordConfig}
-              showToast={showToast}
-              getApiUrl={getApiUrl}
-            />
-
             {/* GEMINI STRATEGIC ENGINE CONFIGURATION */}
             <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[var(--border-subtle)] gap-2">
@@ -2400,7 +1944,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="mt-16 text-center font-mono text-[0.66rem] text-[var(--text-dim)] tracking-wider">
-        AS-RADAR-X &bull; STOCK CONTENT MARKET INTELLIGENCE &bull; REDDIT &amp; DISCORD HUMAN SIGNALS
+        AS-RADAR-X &bull; AUTONOMOUS STOCK MARKET RESEARCH &bull; LOCAL EVIDENCE ARCHIVE
       </footer>
     </div>
   );
