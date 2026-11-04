@@ -386,7 +386,7 @@ Return strictly valid JSON matching the schema.`;
             supply_gap: rawP.supply_gap || '',
             longevity: rawP.longevity || '',
             risk_notes: rawP.risk_notes || '',
-            evidence: { ...(rawP.evidence || {}), source_ids: sourceIds },
+            evidence: { ...(rawP.evidence || {}), source_ids: sourceIds, source_refs: sourceIds.map((id: number) => (input.evidenceSources || input.webResearch?.sources || []).find((source) => Number(source.id) === id)).filter(Boolean) },
             score
           });
 
@@ -443,7 +443,7 @@ Return strictly valid JSON matching the schema.`;
             supply_gap: rawV.supply_gap || '',
             longevity: rawV.longevity || '',
             risk_notes: rawV.risk_notes || '',
-            evidence: { ...(rawV.evidence || {}), source_ids: sourceIds },
+            evidence: { ...(rawV.evidence || {}), source_ids: sourceIds, source_refs: sourceIds.map((id: number) => (input.evidenceSources || input.webResearch?.sources || []).find((source) => Number(source.id) === id)).filter(Boolean) },
             score
           });
 
