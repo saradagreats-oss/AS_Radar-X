@@ -35,6 +35,7 @@ interface AnalystInput {
   researchMemo?: string;
   evidenceSources?: SourceEvidenceRecord[];
   portfolioSummary?: Record<string, any> | null;
+  model?: string;
 }
 
 interface GeminiModelOutput {
@@ -61,21 +62,24 @@ function getClient() {
   return new GoogleGenAI({ apiKey });
 }
 
-async function candidateModels(): Promise<string[]> {
-  const custom = storage.getCustomModel()?.trim();
+async function candidateModels(selectedModel?: string): Promise<string[]> {
+  const custom = String(selectedModel || storage.getCustomModel() || '').trim();
+  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom.replace(/^models\//, '') : undefined;
+  if (cleanCustom) return [cleanCustom];
+
   const preferred = process.env.GEMINI_MODEL?.trim();
   const lastSuccessful = storage.getLastSuccessfulModel()?.trim();
-  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom.replace(/^models\//, '') : undefined;
   const cleanPreferred = preferred && preferred.toLowerCase() !== 'auto' ? preferred.replace(/^models\//, '') : undefined;
   let available: string[] = [];
   try {
     available = await listAvailableGeminiModels(storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '');
   } catch {
-    // Keep the existing fallback list if live model discovery is temporarily unavailable.
+    // Auto remains usable with the stable documented fallback order.
   }
-  const fallback = available.length ? available.slice(0, 12) : ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'];
-  const preferredOrder = cleanCustom ? [cleanCustom, lastSuccessful, cleanPreferred] : [lastSuccessful, cleanPreferred];
-  return [...new Set([...preferredOrder, ...fallback].filter((model): model is string => !!model))];
+  const fallback = available.length
+    ? available.slice(0, 12)
+    : ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'];
+  return [...new Set([cleanPreferred, lastSuccessful, ...fallback].filter((model): model is string => !!model))];
 }
 
 /** Keep only relevant, distinct tags; never pad with unrelated generic stock terms. */
@@ -325,7 +329,7 @@ Return strictly valid JSON matching the schema.`;
 
   let lastError: any = null;
 
-  for (const model of await candidateModels()) {
+  for (const model of await candidateModels(input.model)) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await ai.models.generateContent({
