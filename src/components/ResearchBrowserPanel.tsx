@@ -32,7 +32,8 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
     window.addEventListener('resize', syncBounds);
     window.addEventListener('scroll', syncBounds, true);
     const timer = window.setInterval(syncBounds, 700);
-    window.asRadarDesktop.showBrowser().catch(() => undefined);
+    // The backend explicitly shows the native browser only during a human handoff.
+    // During autonomous work this panel displays the latest read-only screenshot preview.
     window.asRadarDesktop.browserStatus().then(setBrowserStatus).catch(() => undefined);
     return () => {
       observer?.disconnect();
@@ -54,7 +55,14 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
   const latestPage = [...events].reverse().find((event) => event.type === 'page_visited');
   const latestUrl = latestPage?.url || browserStatus.url || '';
   const latestTitle = latestPage?.message || browserStatus.title || 'Research browser';
-  const latestActivity = [...events].filter((event) => ['agent_intent','browser_action','human_handoff','portfolio_synced'].includes(event.type)).slice(-5).reverse();
+  const latestScreenshotEvent = [...events].reverse().find((event) =>
+    event.type === 'browser_preview' || (event.type === 'browser_action' && event.details?.screenshot)
+  );
+  const screenshotFile = String(latestScreenshotEvent?.details?.screenshot || '').split('/').pop();
+  const screenshotUrl = jobId && screenshotFile
+    ? '/api/research/screenshots/' + encodeURIComponent(jobId) + '/' + encodeURIComponent(screenshotFile)
+    : '';
+  const latestActivity = [...events].filter((event) => ['agent_intent','browser_action','human_handoff','portfolio_synced','gemini_request_started','gemini_wait','gemini_request_completed','gemini_request_error'].includes(event.type)).slice(-6).reverse();
 
   if (!visible) return null;
 
@@ -75,14 +83,25 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
               <i className="fa-solid fa-play mr-1"></i> DONE / CONTINUE
             </button>
           )}
-          <button onClick={onClose} className="p-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--text-main)]" title="Hide browser">
+          <button onClick={onClose} disabled={paused} className="p-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--text-main)] disabled:opacity-40 disabled:cursor-not-allowed" title={paused ? "Finish the requested browser step before hiding it" : "Hide browser"}>
             <i className="fa-solid fa-eye-slash"></i>
           </button>
         </div>
       </div>
       <div ref={hostRef} className="relative min-h-[350px] h-[min(54vh,560px)] bg-[#101319]">
-        {!window.asRadarDesktop?.isDesktop && (
+        {screenshotUrl ? (
+          <img
+            src={screenshotUrl}
+            alt="Latest read-only browser research preview"
+            className="absolute inset-0 w-full h-full object-contain"
+          />
+        ) : (
           <div className="absolute inset-0 grid place-items-center p-6 text-sm text-center text-[var(--text-dim)]">
+            {paused ? 'Complete the requested step in the browser, then press DONE / CONTINUE.' : 'Preparing the first browser capture…'}
+          </div>
+        )}
+        {!window.asRadarDesktop?.isDesktop && (
+          <div className="absolute inset-0 grid place-items-center p-6 text-sm text-center text-[var(--text-dim)] bg-[#101319]/80">
             The live embedded research browser is available in the Windows desktop EXE.
           </div>
         )}
