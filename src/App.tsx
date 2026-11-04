@@ -30,7 +30,7 @@ export default function App() {
   const [isResearching, setIsResearching] = useState<boolean>(false);
   const [researchStage, setResearchStage] = useState<ResearchStage>('PLANNING');
   const [progressPercent, setProgressPercent] = useState<number>(0);
-  const [progressMessage, setProgressMessage] = useState<string>('Initializing research engine...');
+  const [progressMessage, setProgressMessage] = useState<string>('Ready for deep research.');
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [researchNiche, setResearchNiche] = useState<string>('');
