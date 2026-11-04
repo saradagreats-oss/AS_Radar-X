@@ -435,7 +435,7 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   ].join('\n');
   log(input.jobId, 'model_selection', `Gemini model preference: ${modelPreference}.`, { selectedModel: modelPreference, candidates: modelCandidates });
   log(input.jobId, 'agent_instructions', 'Exact public-market research instructions sent to Gemini Computer Use.', {
-    prompt: prompt.join('\\n'),
+    prompt,
     model,
     maxTurns,
     attemptsPerSite: SITE_CAPTURE_MAX_ATTEMPTS,
