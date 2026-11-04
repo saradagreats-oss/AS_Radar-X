@@ -1,33 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type {
-  DiscordConfig,
-  HistoryRecord,
-  PhotoOpportunity,
-  RedditConfig,
-  ResearchReport,
-  ResearchStage,
-  VideoOpportunity
-} from '../server/types.js';
+import type { HistoryRecord, PhotoOpportunity, ResearchReport, ResearchStage, VideoOpportunity } from '../server/types.js';
 import { PhotoCard } from './components/PhotoCard.js';
 import { VideoCard } from './components/VideoCard.js';
 import { EvidenceModal } from './components/EvidenceModal.js';
-import { RedditConfigSection } from './components/RedditConfigSection.js';
-import { DiscordConfigSection } from './components/DiscordConfigSection.js';
+import { ResearchBrowserPanel } from './components/ResearchBrowserPanel.js';
+import { PortfolioTable } from './components/PortfolioTable.js';
 
 const RESEARCH_STAGES: Array<{ id: ResearchStage; label: string }> = [
-  { id: 'INITIALIZING', label: 'INITIALIZING RESEARCH ENGINE' },
-  { id: 'COLLECTING', label: 'COLLECTING DISCUSSION DATA (REDDIT & DISCORD)' },
-  { id: 'NORMALIZING', label: 'NORMALIZING RESULTS' },
-  { id: 'DEDUPLICATING', label: 'REMOVING DUPLICATES' },
-  { id: 'CLUSTERING', label: 'CLUSTERING HUMAN COMPLAINTS & DEMAND' },
-  { id: 'DEMAND_ANALYSIS', label: 'ANALYZING RECURRING DEMAND' },
-  { id: 'SUPPLY_GAP', label: 'ANALYZING ASSET SHORTAGES / GAPS' },
-  { id: 'COMMERCIAL_USE', label: 'MAPPING COMMERCIAL USE' },
-  { id: 'LONGEVITY', label: 'CHECKING EVERGREEN LONGEVITY' },
-  { id: 'SCORING', label: 'SCORING OPPORTUNITIES' },
-  { id: 'PDF_ANALYSIS', label: 'ANALYZING ATTACHED PDF & VISUAL DIRECTIVES' },
-  { id: 'PREPARING_PHOTOS', label: 'PREPARING PHOTO OPPORTUNITIES (SEO TITLES & 25 TAGS)' },
-  { id: 'PREPARING_VIDEOS', label: 'PREPARING VIDEO OPPORTUNITIES (SEO TITLES & 25 TAGS)' },
+  { id: 'PLANNING', label: 'PLAN RESEARCH' },
+  { id: 'BROWSER_RESEARCH', label: 'LIVE MARKET RESEARCH' },
+  { id: 'PAUSED_FOR_USER', label: 'USER VERIFICATION' },
+  { id: 'PORTFOLIO_SYNC', label: 'SYNC ADOBE PORTFOLIO' },
+  { id: 'NORMALIZING', label: 'NORMALIZE EVIDENCE' },
+  { id: 'FINAL_ANALYSIS', label: 'ANALYZE OPPORTUNITIES' },
+  { id: 'SCORING', label: 'CALCULATE SCORES' },
   { id: 'COMPLETE', label: 'REPORT READY' }
 ];
 
@@ -36,7 +22,7 @@ export default function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
 
   // Navigation state
-  const [activeTab, setActiveTab] = useState<'research' | 'sources' | 'instructions' | 'history' | 'proxy' | 'settings'>('research');
+  const [activeTab, setActiveTab] = useState<'research' | 'portfolio' | 'instructions' | 'history' | 'proxy' | 'settings'>('research');
 
   // Controls state
   const [photoCount, setPhotoCount] = useState<number>(5);
@@ -47,6 +33,12 @@ export default function App() {
   const [progressMessage, setProgressMessage] = useState<string>('Initializing research engine...');
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [researchNiche, setResearchNiche] = useState<string>('');
+  const [titleInstructions, setTitleInstructions] = useState<string>('');
+  const [tagCount, setTagCount] = useState<number>(25);
+  const [researchEvents, setResearchEvents] = useState<any[]>([]);
+  const [showBrowser, setShowBrowser] = useState<boolean>(false);
+  const [portfolioRefreshKey, setPortfolioRefreshKey] = useState<number>(0);
 
   // Platform Data Switch state (Default: ON)
   const [platformDataEnabled, setPlatformDataEnabled] = useState<boolean>(true);
@@ -203,6 +195,7 @@ export default function App() {
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const eventPollRef = useRef<NodeJS.Timeout | null>(null);
 
   // Show Toast
   const showToast = (msg: string) => {
@@ -230,16 +223,18 @@ export default function App() {
 
     const savedVideo = localStorage.getItem('as_radar_x_video_count');
     if (savedVideo) setVideoCount(parseInt(savedVideo, 10));
+    const savedNiche = localStorage.getItem('as_radar_x_research_niche');
+    if (savedNiche) setResearchNiche(savedNiche);
+    const savedTitle = localStorage.getItem('as_radar_x_title_instructions');
+    if (savedTitle) setTitleInstructions(savedTitle);
+    const savedTags = Number(localStorage.getItem('as_radar_x_tag_count') || 25);
+    if (Number.isInteger(savedTags) && savedTags >= 1 && savedTags <= 50) setTagCount(savedTags);
 
     const savedApiBase = localStorage.getItem('as_radar_x_api_base');
     if (savedApiBase) setApiBaseUrl(savedApiBase);
 
-    loadPlatformData();
-    loadRedditConfig();
-    loadDiscordConfig();
     loadInstructions();
     loadRejectedContent();
-    loadSourcesStatus();
     loadHistory();
     loadGeminiConfig();
     loadPdfConfig();
@@ -255,6 +250,8 @@ export default function App() {
         const diff = Math.max(0, Math.floor((Date.now() - parseInt(storedStarted, 10)) / 1000));
         setElapsedSeconds(diff);
       }
+      setShowBrowser(true);
+      loadResearchEvents(storedJobId);
       pollJobStatus(storedJobId);
     }
   }, []);
@@ -289,97 +286,6 @@ export default function App() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [isResearching]);
-
-  // Load Platform Data Switch
-  const loadPlatformData = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/platform-data'));
-      if (res.ok) {
-        const data = await res.json();
-        setPlatformDataEnabled(data.enabled ?? true);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleTogglePlatformData = async () => {
-    const nextVal = !platformDataEnabled;
-    setPlatformDataEnabled(nextVal);
-    try {
-      const res = await fetch(getApiUrl('/api/platform-data'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: nextVal })
-      });
-      if (res.ok) {
-        showToast(
-          nextVal
-            ? 'Platform Data ENABLED: Collecting live Reddit & Discord discussion data.'
-            : 'Platform Data DISABLED: Running in pure Gemini AI intelligence and historical memory mode.'
-        );
-        loadSourcesStatus();
-      }
-    } catch (err: any) {
-      showToast(`Failed to update toggle: ${err.message}`);
-    }
-  };
-
-  // Load Reddit Config
-  const loadRedditConfig = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/reddit/config'));
-      if (res.ok) {
-        const data = await res.json();
-        setRedditConfig(data);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSaveRedditConfig = async (updated: Partial<RedditConfig>) => {
-    const res = await fetch(getApiUrl('/api/reddit/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated)
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setRedditConfig(data.config);
-      loadSourcesStatus();
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
-  };
-
-  // Load Discord Config
-  const loadDiscordConfig = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/discord/config'));
-      if (res.ok) {
-        const data = await res.json();
-        setDiscordConfig(data);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSaveDiscordConfig = async (updated: Partial<DiscordConfig>) => {
-    const res = await fetch(getApiUrl('/api/discord/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated)
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setDiscordConfig(data.config);
-      loadSourcesStatus();
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
-  };
 
   // Instructions
   const loadInstructions = async () => {
@@ -602,56 +508,6 @@ export default function App() {
       }
     } catch (err: any) {
       showToast(`Error deleting item: ${err.message}`);
-    }
-  };
-
-  // Load Sources Status
-  const loadSourcesStatus = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/sources/status'));
-      if (res.ok) {
-        const data = await res.json();
-        const map: Record<string, string> = {};
-        for (const [k, v] of Object.entries(data.sources || {})) {
-          map[k] = (v as any).overall || 'AVAILABLE';
-        }
-        setSourcesStatus(map);
-        if (data.platformDataEnabled !== undefined) {
-          setPlatformDataEnabled(data.platformDataEnabled);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  // Run Real Live Probe of Reddit and Discord
-  const runSourcesProbe = async (force: boolean = false) => {
-    setIsProbing(true);
-    try {
-      const res = await fetch(getApiUrl(force ? '/api/sources/probe' : '/api/sources/status'), {
-        method: force ? 'POST' : 'GET'
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setProbeData(data);
-        if (data.sources) {
-          const map: Record<string, string> = {};
-          for (const [k, v] of Object.entries(data.sources)) {
-            map[k] = (v as any).overall || 'AVAILABLE';
-          }
-          setSourcesStatus(map);
-        }
-        if (force) {
-          showToast(`Live probe finished! Inspected ${data.totalEvidenceCount || 0} discussion signals.`);
-        }
-      } else {
-        throw new Error(`Probe HTTP ${res.status}`);
-      }
-    } catch (err: any) {
-      showToast(`Probe failed: ${err.message}`);
-    } finally {
-      setIsProbing(false);
     }
   };
 
