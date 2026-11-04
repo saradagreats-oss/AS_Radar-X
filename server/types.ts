@@ -166,6 +166,7 @@ export interface PortfolioSummary {
   pending?: number | null;
   totalDownloads?: number | null;
   changedAssets?: number;
+  syncedAssets?: number;
   sourceUrl?: string;
   capturedAt?: string;
 }
