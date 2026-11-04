@@ -10,6 +10,7 @@ import { applyProxySettings, testProxyConnection } from './server/proxy.js';
 import { listAvailableGeminiModels } from './server/gemini/models.js';
 import { RedditCollector } from './server/collectors/reddit.js';
 import { DiscordCollector } from './server/collectors/discord.js';
+import { resumeComputerUse } from './server/agent/computerUseResearch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,6 +82,22 @@ app.get('/api/research/status/:jobId', (req: Request, res: Response) => {
     message: state.message,
     error: state.error
   });
+});
+
+// Autonomous research audit trail and portfolio cache.
+app.get('/api/research/events/:jobId', (req: Request, res: Response) => {
+  const after = Math.max(0, Number(req.query.after) || 0);
+  res.json({ job_id: req.params.jobId, events: storage.getResearchEvents(req.params.jobId, after) });
+});
+
+app.post('/api/research/resume/:jobId', (req: Request, res: Response) => {
+  const resumed = resumeComputerUse(req.params.jobId);
+  res.json({ success: resumed, message: resumed ? 'Research agent resumed.' : 'No pending human handoff for this job.' });
+});
+
+app.get('/api/portfolio/assets', (_req: Request, res: Response) => {
+  const assets = storage.getPortfolioAssets();
+  res.json({ assets, count: assets.length });
 });
 
 // 3. Get Report
