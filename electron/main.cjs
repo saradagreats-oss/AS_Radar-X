@@ -39,7 +39,7 @@ function safeHttpUrl(value) {
 
 function attachResearchBrowser() {
   if (!researchSession) {
-    researchSession = session.fromPartition('persist:as-radar-research');
+    researchSession = session.fromPartition('persist:as-radar-public-research-v2');
     void applyChromiumProxy(desktopProxyConfig).catch((error) => console.error('[AS-Radar-X research proxy]', error));
   }
   if (!mainWindow || mainWindow.isDestroyed() || researchBrowser) return;
