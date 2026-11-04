@@ -1,6 +1,6 @@
 export type CollectorStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'ERROR' | 'BLOCKED' | 'EMPTY' | 'DISABLED';
 
-export type DataSourceType = 'Reddit' | 'Discord' | 'AI Intelligence';
+export type DataSourceType = 'Browser Research' | 'Adobe Stock Portfolio' | 'AI Intelligence';
 
 export interface RawEvidence {
   source: DataSourceType;
@@ -297,41 +297,4 @@ export interface ResearchJobState {
   startedAt: number;
   error?: string;
   report?: ResearchReport;
-}
-
-// Reddit Configuration & Status
-export interface RedditConfig {
-  clientId: string;
-  clientSecret: string;
-  userAgent: string;
-  subreddits: string[];
-  timeframe: '24h' | '7d';
-  collectPosts: boolean;
-  collectComments: boolean;
-  connected?: boolean;
-  lastCollectedAt?: string;
-  collectedCount?: number;
-}
-
-// Discord Configuration & Status
-export interface DiscordGuildConfig {
-  id: string;
-  name?: string;
-  channels: Array<{ id: string; name?: string }>;
-}
-
-export interface DiscordConfig {
-  botToken: string;
-  guilds: DiscordGuildConfig[];
-  timeframe: '24h' | '7d';
-  collectMessages: boolean;
-  collectThreads: boolean;
-  connected?: boolean;
-  lastCollectedAt?: string;
-  collectedCount?: number;
-}
-
-// Platform Data Switch Configuration
-export interface PlatformDataConfig {
-  enabled: boolean;
 }
