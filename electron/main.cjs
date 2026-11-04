@@ -16,6 +16,8 @@ let browserVisible = false;
 let browserTakeover = false;
 let lastBrowserBounds = null;
 let researchSession = null;
+let researchNavigationPending = false;
+let researchNavigationError = '';
 
 function sendBrowserEvent(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('as-radar:browser-event', payload);
@@ -75,8 +77,15 @@ function attachResearchBrowser() {
   const notify = () => sendBrowserEvent({ type: 'navigation', url: researchBrowser.webContents.getURL(), title: researchBrowser.webContents.getTitle(), loading: researchBrowser.webContents.isLoading() });
   researchBrowser.webContents.on('did-navigate', notify);
   researchBrowser.webContents.on('did-navigate-in-page', notify);
-  researchBrowser.webContents.on('did-start-loading', notify);
-  researchBrowser.webContents.on('did-stop-loading', notify);
+  researchBrowser.webContents.on('did-start-loading', () => { researchNavigationPending = true; researchNavigationError = ''; notify(); });
+  researchBrowser.webContents.on('did-stop-loading', () => { researchNavigationPending = false; notify(); });
+  researchBrowser.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    researchNavigationPending = false;
+    researchNavigationError = `Browser page failed to load: ${errorDescription || 'unknown network error'} (${errorCode}) · ${validatedURL || researchBrowser.webContents.getURL()}`;
+    notify();
+    sendBrowserEvent({ type: 'error', message: researchNavigationError, url: validatedURL || '' });
+  });
   researchBrowser.webContents.on('page-title-updated', notify);
   researchBrowser.webContents.on('render-process-gone', (_event, details) => sendBrowserEvent({ type: 'error', message: 'Research browser renderer stopped.', details }));
   mainWindow.on('resize', updateResearchBrowserBounds);
@@ -94,8 +103,67 @@ function updateResearchBrowserBounds(_event, bounds) {
   if (researchBrowser) researchBrowser.setBounds(lastBrowserBounds);
 }
 
+function beginResearchNavigation(url) {
+  if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  researchNavigationPending = true;
+  researchNavigationError = '';
+  const wc = researchBrowser.webContents;
+  void wc.loadURL(url).catch((error) => {
+    researchNavigationPending = false;
+    researchNavigationError = `Browser navigation failed: ${error && error.message ? error.message : String(error)}`;
+    sendBrowserEvent({ type: 'error', message: researchNavigationError, url });
+  });
+}
+
+async function waitForResearchPageLoad(timeoutMs = 65000) {
+  if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  const wc = researchBrowser.webContents;
+  if (researchNavigationError) {
+    const message = researchNavigationError;
+    researchNavigationError = '';
+    throw new Error(message);
+  }
+  if (!researchNavigationPending && !wc.isLoading()) return;
+
+  await new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      wc.removeListener('did-stop-loading', onStop);
+      wc.removeListener('did-fail-load', onFail);
+    };
+    const onStop = () => {
+      if (wc.isLoading() || researchNavigationPending) return;
+      cleanup();
+      if (researchNavigationError) reject(new Error(researchNavigationError));
+      else resolve();
+    };
+    const onFail = (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      researchNavigationPending = false;
+      researchNavigationError = `Browser page failed to load: ${errorDescription || 'unknown network error'} (${errorCode}) · ${validatedURL || wc.getURL()}`;
+      cleanup();
+      reject(new Error(researchNavigationError));
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Browser page is still loading after ${Math.round(timeoutMs / 1000)} seconds: ${wc.getURL() || 'unknown URL'}`));
+    }, timeoutMs);
+    wc.on('did-stop-loading', onStop);
+    wc.on('did-fail-load', onFail);
+    onStop();
+  });
+
+  if (researchNavigationError) {
+    const message = researchNavigationError;
+    researchNavigationError = '';
+    throw new Error(message);
+  }
+}
+
 async function browserSnapshot() {
   if (!researchBrowser) throw new Error('Research browser is not initialized.');
+  await waitForResearchPageLoad();
   const snapshot = await researchBrowser.webContents.executeJavaScript(`(() => {
     const active = document.activeElement;
     const focusedPassword = !!active && (active.tagName === 'INPUT' && active.type === 'password' || active.isContentEditable && active.closest('form')?.querySelector('input[type=password]'));
@@ -121,8 +189,8 @@ async function executeBrowserAction(action, args = {}) {
     case 'navigate': {
       const url = safeHttpUrl(args.url);
       if (!url) throw new Error('Only public HTTP/HTTPS navigation is allowed.');
-      await wc.loadURL(url);
-      return { url: wc.getURL(), title: wc.getTitle() };
+      beginResearchNavigation(url);
+      return { url, loading: true };
     }
     case 'pointer': {
       const bounds = researchBrowser.getBounds();
@@ -201,8 +269,8 @@ async function handleBrowserRequest(message) {
       researchBrowser.setVisible(true);
       updateResearchBrowserBounds();
       const url = args.url ? safeHttpUrl(args.url) : null;
-      if (url && url !== researchBrowser.webContents.getURL()) await researchBrowser.webContents.loadURL(url);
-      result = { visible: true, url: researchBrowser.webContents.getURL(), title: researchBrowser.webContents.getTitle() };
+      if (url && url !== researchBrowser.webContents.getURL()) beginResearchNavigation(url);
+      result = { visible: true, url: url || researchBrowser.webContents.getURL(), loading: researchNavigationPending };
     } else if (method === 'hide') {
       browserVisible = false;
       if (researchBrowser) researchBrowser.setVisible(false);
