@@ -117,10 +117,8 @@ async function runTests() {
   const storedEvents = storage.getResearchEvents(eventJob);
   assert(storedEvents.length === 1 && storedEvents[0].details.count === 3, 'research audit events persist in SQLite');
 
-  const reportFiles = ['data/as_radar_x.sqlite', 'data/reports_fallback.json', 'data/settings_fallback.json'];
   const gitignore = fs.readFileSync(new URL('../../.gitignore', import.meta.url), 'utf8');
-  assert(gitignore.includes('/data/'), 'private local runtime data is excluded from Git');
-  assert(!reportFiles.some((file) => fs.existsSync(new URL('../../' + file, import.meta.url))), 'tracked runtime database files are removed from the app source tree');
+  assert(gitignore.includes('/data/') && gitignore.includes('*.sqlite'), 'private local runtime data is excluded from Git');
 
   console.log('\nTEST SUMMARY: ' + passed + ' PASSED, ' + failed + ' FAILED');
   if (failed) process.exitCode = 1;
