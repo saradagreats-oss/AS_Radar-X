@@ -785,6 +785,30 @@ export default function App() {
     }
   };
 
+  // Load live browser events and normalized evidence records.
+  const loadResearchEvents = async (jobId: string) => {
+    try {
+      const res = await fetch(getApiUrl('/api/research/events/' + encodeURIComponent(jobId)));
+      if (!res.ok) return;
+      const data = await res.json();
+      setResearchEvents(Array.isArray(data.events) ? data.events : []);
+    } catch {
+      // Status polling remains the source of truth if event polling briefly fails.
+    }
+  };
+
+  const handleContinueResearch = async () => {
+    if (!activeJobId) return;
+    try {
+      const res = await fetch(getApiUrl('/api/research/resume/' + encodeURIComponent(activeJobId)), { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) throw new Error(data.message || ('HTTP ' + res.status));
+      showToast('Gemini has resumed browser research.');
+    } catch (err: any) {
+      showToast('Could not resume research: ' + err.message);
+    }
+  };
+
   // Start Research
   const handleStartResearch = async () => {
     if (isResearching) return;
@@ -800,14 +824,16 @@ export default function App() {
     setIsResearching(true);
     setElapsedSeconds(0);
     setProgressPercent(5);
-    setResearchStage('INITIALIZING');
-    setProgressMessage('Initializing research engine...');
+    setResearchStage('PLANNING');
+    setProgressMessage('Gemini is planning the research...');
+    setResearchEvents([]);
+    setShowBrowser(true);
 
     try {
       const res = await fetch(getApiUrl('/api/research'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount })
+        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount, niche: researchNiche, title_instructions: titleInstructions, tag_count: tagCount })
       });
 
       if (!res.ok) {
@@ -818,6 +844,8 @@ export default function App() {
       const data = await res.json();
       const jobId = data.job_id;
       setActiveJobId(jobId);
+      setShowBrowser(true);
+      loadResearchEvents(jobId);
       localStorage.setItem('as_radar_x_active_job', jobId);
       localStorage.setItem('as_radar_x_active_job_started', String(Date.now()));
 
@@ -844,24 +872,27 @@ export default function App() {
       }
 
       const data = await res.json();
-      setResearchStage(data.stage || 'INITIALIZING');
+      setResearchStage(data.stage || 'PLANNING');
       setProgressPercent(data.progress || 10);
       setProgressMessage(data.message || 'Processing research pipeline...');
+      await loadResearchEvents(jobId);
+      if (data.stage === 'PAUSED_FOR_USER') setShowBrowser(true);
 
       if (data.status === 'COMPLETED') {
         const repRes = await fetch(getApiUrl(`/api/report/${encodeURIComponent(jobId)}`));
         if (repRes.ok) {
           const reportData = await repRes.json();
           setCurrentReport(reportData);
+          setPortfolioRefreshKey((value) => value + 1);
           setIsHistoricalReport(false);
           priorCurrentReportRef.current = null;
           showToast('Research completed successfully.');
           try { if ('Notification' in window && Notification.permission === 'granted') new Notification('AS-Radar-X', { body: `Research completed: ${reportData.photos?.length || 0} photos and ${reportData.videos?.length || 0} videos.` }); } catch { /* Desktop notifications are optional. */ }
-          if (reportData.source_status) {
-            setSourcesStatus(reportData.source_status);
-          }
+
         }
         setIsResearching(false);
+        setShowBrowser(false);
+        window.asRadarDesktop?.hideBrowser().catch(() => undefined);
         setActiveJobId(null);
         localStorage.removeItem('as_radar_x_active_job');
         localStorage.removeItem('as_radar_x_active_job_started');
@@ -879,6 +910,8 @@ export default function App() {
       setActiveJobId(null);
       localStorage.removeItem('as_radar_x_active_job');
       localStorage.removeItem('as_radar_x_active_job_started');
+      setShowBrowser(false);
+      window.asRadarDesktop?.hideBrowser().catch(() => undefined);
       setErrorInfo({
         message: err.message || 'Research execution interrupted.',
         details: err.stack || String(err)
@@ -894,6 +927,9 @@ export default function App() {
       const report = await res.json();
       if (!isHistoricalReport) priorCurrentReportRef.current = currentReport;
       setCurrentReport(report);
+      setPortfolioRefreshKey((value) => value + 1);
+      setResearchEvents([]);
+      await loadResearchEvents(jobId);
       setIsHistoricalReport(true);
       setOpenEvidenceMap({});
       setActiveTab('research');
