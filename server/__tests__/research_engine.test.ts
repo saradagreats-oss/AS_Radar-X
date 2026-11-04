@@ -126,6 +126,11 @@ async function runTests() {
   assert(!browserBridgeSource.includes('portfolioRows'), 'browser snapshots do not expose portfolio row extraction');
   assert(electronSource.includes("host === 'contributor.stock.adobe.com'") && !electronSource.includes('portfolioRows'), 'desktop browser blocks private contributor pages and never scrapes portfolio rows');
   assert(electronSource.includes("researchSession.webRequest.onBeforeRequest") && electronSource.includes("'will-redirect'"), 'contributor requests and redirects are blocked at the browser boundary');
+  assert(electronSource.includes('function beginResearchNavigation(url)') && electronSource.includes('void wc.loadURL(url)'), 'browser navigation starts without waiting for the full page load');
+  assert(electronSource.includes('async function waitForResearchPageLoad') && electronSource.includes('await waitForResearchPageLoad()'), 'browser capture waits for page readiness after navigation starts');
+  assert(electronSource.includes('Browser page failed to load:'), 'browser reports a specific page navigation failure');
+  assert(!electronSource.includes('await researchBrowser.webContents.loadURL(url)'), 'browser show acknowledgement does not block on remote page load');
+  assert(browserBridgeSource.includes('request('capture', {}, 75000)') && browserBridgeSource.includes('request('show', { url }, 10000)'), 'browser bridge uses separate acknowledgement and page-capture timeouts');
   assert(electronSource.includes("as-radar-public-research-v2") && !electronSource.includes("persist:as-radar-public-research-v2"), 'public research uses a ephemeral anonymous browser session');
   assert(!serverSource.includes('/api/portfolio/assets') && !appSource.includes('PortfolioTable'), 'portfolio tab and API are removed');
   assert(!researcherSource.includes('getInstructions') && !researcherSource.includes('getPdfDocument') && !analystSource.includes('LIVE PORTFOLIO SNAPSHOT'), 'custom instruction, PDF and profile data are excluded from model requests');
