@@ -51,9 +51,10 @@ function inspectPortfolio(jobId: string, capture: any) {
   const body = String(capture.snapshot.text || '');
   const count = (pattern: RegExp) => { const m = body.match(pattern); return m ? Number((m[1] || '').replace(/,/g,'')) : null; };
   const summary = { rowCount: assets.length, accepted: count(/(?:accepted|online)\s*[:\s]*([\d,]+)/i), rejected: count(/(?:not accepted|rejected)\s*[:\s]*([\d,]+)/i), pending: count(/(?:in review|pending)\s*[:\s]*([\d,]+)/i), totalDownloads: count(/(?:total\s+)?downloads?\s*[:\s]*([\d,]+)/i), sourceUrl: url, capturedAt: capture.snapshot.capturedAt };
+  const hasPortfolioEvidence = assets.length > 0 || summary.accepted !== null || summary.rejected !== null || summary.pending !== null || summary.totalDownloads !== null;
   if (assets.length) storage.upsertPortfolioAssets(jobId, assets, url);
-  storage.savePortfolioSnapshot(jobId, url, summary);
-  log(jobId, 'portfolio_synced', assets.length ? `Captured ${assets.length} visible portfolio records.` : 'Visited Adobe Contributor; no asset rows could be reliably extracted from this view.', { summary, assetsFound: assets.length }, url);
+  if (hasPortfolioEvidence) storage.savePortfolioSnapshot(jobId, url, summary);
+  log(jobId, hasPortfolioEvidence ? 'portfolio_synced' : 'portfolio_unavailable', hasPortfolioEvidence ? `Captured ${assets.length} visible portfolio records and any displayed summary values.` : 'Visited Adobe Contributor, but no readable asset records or portfolio totals were visible on this page.', { summary, assetsFound: assets.length, hasPortfolioEvidence }, url);
 }
 
 export function resumeComputerUse(jobId: string) {
