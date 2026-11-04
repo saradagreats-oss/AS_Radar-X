@@ -33,7 +33,7 @@ function cleanComponent(value: any, validEvidenceIds?: Set<number>): ScoreCompon
     score: clampScore(value?.score),
     reason: String(value?.reason || DEFAULT_COMPONENT.reason).slice(0, 700),
     evidence_ids: Array.isArray(value?.evidence_ids)
-      ? [...new Set(value.evidence_ids.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0 && (!validEvidenceIds || validEvidenceIds.has(id))))]
+      ? Array.from(new Set<number>(value.evidence_ids.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0 && (!validEvidenceIds || validEvidenceIds.has(id)))))
       : []
   };
 }
