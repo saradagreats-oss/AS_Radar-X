@@ -266,7 +266,7 @@ Return strictly valid JSON matching the schema.`;
       prompt: {
         type: Type.STRING,
         description:
-          'Production-ready AI video prompt adapted to the buyer's actual motion need. Describe purposeful subject movement; add camera movement, duration, loop and technical details only when useful. No human faces directly shown, no text in video.'
+          "Production-ready AI video prompt adapted to the buyer's actual motion need. Describe purposeful subject movement; add camera movement, duration, loop and technical details only when useful. No human faces directly shown, no text in video." 
       },
       tags: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Up to the requested count of relevant stock-search tags, strongest first; do not pad.' },
       concept: { type: Type.STRING },
