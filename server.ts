@@ -126,7 +126,8 @@ app.get('/api/research/screenshots/:jobId/:file', (req: Request, res: Response) 
 
 app.get('/api/portfolio/assets', (_req: Request, res: Response) => {
   const assets = storage.getPortfolioAssets();
-  res.json({ assets, count: assets.length });
+  const latestSnapshot = storage.getLatestPortfolioSnapshot();
+  res.json({ assets, count: assets.length, snapshot: latestSnapshot ? { ...latestSnapshot.summary, capturedAt: latestSnapshot.capturedAt, sourceUrl: latestSnapshot.sourceUrl } : null });
 });
 
 // 3. Get Report
