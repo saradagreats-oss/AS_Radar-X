@@ -370,6 +370,7 @@ Return strictly valid JSON matching the schema.`;
           const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
           const score = calculateOpportunityScore(rawP.score_components, validIds);
           const sourceIds = Array.isArray(rawP.evidence?.source_ids) ? rawP.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
+          if (!sourceIds.length) continue;
           processedPhotos.push({
             id: rawP.id || `photo-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
@@ -426,6 +427,7 @@ Return strictly valid JSON matching the schema.`;
           const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
           const score = calculateOpportunityScore(rawV.score_components, validIds);
           const sourceIds = Array.isArray(rawV.evidence?.source_ids) ? rawV.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
+          if (!sourceIds.length) continue;
           processedVideos.push({
             id: rawV.id || `video-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
