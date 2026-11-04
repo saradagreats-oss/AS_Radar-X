@@ -4,13 +4,11 @@ import { PhotoCard } from './components/PhotoCard.js';
 import { VideoCard } from './components/VideoCard.js';
 import { EvidenceModal } from './components/EvidenceModal.js';
 import { ResearchBrowserPanel } from './components/ResearchBrowserPanel.js';
-import { PortfolioTable } from './components/PortfolioTable.js';
 
 const RESEARCH_STAGES: Array<{ id: ResearchStage; label: string }> = [
   { id: 'PLANNING', label: 'PLAN RESEARCH' },
   { id: 'BROWSER_RESEARCH', label: 'LIVE MARKET RESEARCH' },
   { id: 'PAUSED_FOR_USER', label: 'USER VERIFICATION' },
-  { id: 'PORTFOLIO_SYNC', label: 'SYNC ADOBE PORTFOLIO' },
   { id: 'NORMALIZING', label: 'NORMALIZE EVIDENCE' },
   { id: 'FINAL_ANALYSIS', label: 'ANALYZE OPPORTUNITIES' },
   { id: 'SCORING', label: 'CALCULATE SCORES' },
@@ -23,7 +21,7 @@ export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
 
   // Navigation state
-  const [activeTab, setActiveTab] = useState<'research' | 'portfolio' | 'instructions' | 'history' | 'proxy' | 'settings'>('research');
+  const [activeTab, setActiveTab] = useState<'research' | 'rejected' | 'history' | 'proxy' | 'settings'>('research');
 
   // Controls state
   const [photoCount, setPhotoCount] = useState<number>(5);
@@ -35,11 +33,9 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [researchNiche, setResearchNiche] = useState<string>('');
-  const [titleInstructions, setTitleInstructions] = useState<string>('');
   const [tagCount, setTagCount] = useState<number>(25);
   const [researchEvents, setResearchEvents] = useState<any[]>([]);
   const [showBrowser, setShowBrowser] = useState<boolean>(false);
-  const [portfolioRefreshKey, setPortfolioRefreshKey] = useState<number>(0);
 
   // Raw Evidence Modal state
   const [evidenceModal, setEvidenceModal] = useState<{
@@ -63,35 +59,9 @@ export default function App() {
   const [historyList, setHistoryList] = useState<HistoryRecord[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
 
-  // Intelligence Setup state
-  const [instructionsText, setInstructionsText] = useState<string>('');
+  // Rejected data is the only saved user-specific research context.
   const [rejectedItems, setRejectedItems] = useState<string[]>([]);
   const [newRejectionInput, setNewRejectionInput] = useState<string>('');
-
-  // PDF Reference Document & Directives state
-  const [pdfConfig, setPdfConfig] = useState<{
-    hasPdf: boolean;
-    fileName: string;
-    fileSize: number;
-    instructions: string;
-    uploadedAt: string;
-  }>({
-    hasPdf: false,
-    fileName: '',
-    fileSize: 0,
-    instructions: '',
-    uploadedAt: ''
-  });
-  const [pdfDirectivesInput, setPdfDirectivesInput] = useState<string>('');
-  const [pendingPdfFile, setPendingPdfFile] = useState<{
-    name: string;
-    size: number;
-    mimeType: string;
-    base64: string;
-  } | null>(null);
-  const [isSavingPdf, setIsSavingPdf] = useState<boolean>(false);
-  const [isClearingPdf, setIsClearingPdf] = useState<boolean>(false);
-  const [pdfUploadError, setPdfUploadError] = useState<string | null>(null);
 
   // Toast banner
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -177,19 +147,15 @@ export default function App() {
     if (savedVideo) setVideoCount(parseInt(savedVideo, 10));
     const savedNiche = localStorage.getItem('as_radar_x_research_niche');
     if (savedNiche) setResearchNiche(savedNiche);
-    const savedTitle = localStorage.getItem('as_radar_x_title_instructions');
-    if (savedTitle) setTitleInstructions(savedTitle);
     const savedTags = Number(localStorage.getItem('as_radar_x_tag_count') || 25);
     if (Number.isInteger(savedTags) && savedTags >= 1 && savedTags <= 50) setTagCount(savedTags);
 
     const savedApiBase = localStorage.getItem('as_radar_x_api_base');
     if (savedApiBase) setApiBaseUrl(savedApiBase);
 
-    loadInstructions();
     loadRejectedContent();
     loadHistory();
     loadGeminiConfig();
-    loadPdfConfig();
     loadProxyConfig();
 
     // Check active job
@@ -247,178 +213,6 @@ export default function App() {
     }
     return () => { if (eventPollRef.current) clearInterval(eventPollRef.current); };
   }, [isResearching, activeJobId]);
-
-  // Instructions
-  const loadInstructions = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/instruction'));
-      if (res.ok) {
-        const data = await res.json();
-        setInstructionsText(data.instructions || '');
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSaveInstructions = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/instruction'), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instructions: instructionsText.slice(0, 1000) })
-      });
-      if (res.ok) {
-        showToast('Analyst instructions saved successfully.');
-      }
-    } catch (err: any) {
-      showToast(`Failed saving instructions: ${err.message}`);
-    }
-  };
-
-  const handleClearInstructions = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/instruction'), { method: 'DELETE' });
-      if (res.ok) {
-        setInstructionsText('');
-        showToast('Instructions cleared.');
-      }
-    } catch (err: any) {
-      showToast(`Error: ${err.message}`);
-    }
-  };
-
-  // PDF Reference Document & Directives Handlers
-  const loadPdfConfig = async () => {
-    try {
-      const res = await fetch(getApiUrl('/api/pdf-instruction'));
-      if (res.ok) {
-        const data = await res.json();
-        setPdfConfig({
-          hasPdf: !!data.hasPdf,
-          fileName: data.fileName || '',
-          fileSize: data.fileSize || 0,
-          instructions: data.instructions || '',
-          uploadedAt: data.uploadedAt || ''
-        });
-        if (data.instructions) {
-          setPdfDirectivesInput(data.instructions);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const handlePdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setPdfUploadError(null);
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setPdfUploadError('Please select a valid PDF document (.pdf).');
-      return;
-    }
-
-    if (file.size > 30 * 1024 * 1024) {
-      setPdfUploadError('PDF file size exceeds 30MB limit.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.includes(',') ? result.split(',')[1] : result;
-      setPendingPdfFile({
-        name: file.name,
-        size: file.size,
-        mimeType: 'application/pdf',
-        base64
-      });
-      showToast(`PDF loaded: ${file.name} (${Math.round(file.size / 1024)} KB). Click "Save PDF & Directives" to save.`);
-    };
-    reader.onerror = () => {
-      setPdfUploadError('Failed to read the local PDF file. Check permissions.');
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSavePdfConfig = async () => {
-    setIsSavingPdf(true);
-    setPdfUploadError(null);
-    try {
-      if (!pendingPdfFile && !pdfConfig.hasPdf) {
-        setPdfUploadError('Please select a PDF file before saving.');
-        setIsSavingPdf(false);
-        return;
-      }
-
-      const payload: any = {
-        instructions: pdfDirectivesInput.slice(0, 3000)
-      };
-
-      if (pendingPdfFile) {
-        payload.fileName = pendingPdfFile.name;
-        payload.fileSize = pendingPdfFile.size;
-        payload.mimeType = pendingPdfFile.mimeType;
-        payload.base64Data = pendingPdfFile.base64;
-      } else {
-        payload.fileName = pdfConfig.fileName;
-        payload.fileSize = pdfConfig.fileSize;
-        payload.mimeType = 'application/pdf';
-      }
-
-      const res = await fetch(getApiUrl('/api/pdf-instruction'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setPdfConfig({
-          hasPdf: true,
-          fileName: data.fileName || pendingPdfFile?.name || pdfConfig.fileName,
-          fileSize: data.fileSize || pendingPdfFile?.size || pdfConfig.fileSize,
-          instructions: pdfDirectivesInput,
-          uploadedAt: data.uploadedAt || new Date().toISOString()
-        });
-        setPendingPdfFile(null);
-        showToast('PDF document and directives saved successfully.');
-      } else {
-        const err = await res.json();
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-    } catch (err: any) {
-      setPdfUploadError(err.message || 'Failed saving PDF');
-      showToast(`Error: ${err.message}`);
-    } finally {
-      setIsSavingPdf(false);
-    }
-  };
-
-  const handleClearPdfConfig = async () => {
-    setIsClearingPdf(true);
-    try {
-      const res = await fetch(getApiUrl('/api/pdf-instruction'), { method: 'DELETE' });
-      if (res.ok) {
-        setPdfConfig({
-          hasPdf: false,
-          fileName: '',
-          fileSize: 0,
-          instructions: '',
-          uploadedAt: ''
-        });
-        setPendingPdfFile(null);
-        setPdfDirectivesInput('');
-        showToast('PDF document and directives cleared.');
-      }
-    } catch (err: any) {
-      showToast(`Error clearing PDF: ${err.message}`);
-    } finally {
-      setIsClearingPdf(false);
-    }
-  };
 
   // Rejected Content
   const loadRejectedContent = async () => {
@@ -804,7 +598,7 @@ export default function App() {
       const res = await fetch(getApiUrl('/api/research'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount, niche: researchNiche, title_instructions: titleInstructions, tag_count: tagCount, model: selectedModelInput })
+        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount, niche: researchNiche, tag_count: tagCount, model: selectedModelInput })
       });
 
       if (!res.ok) {
@@ -854,7 +648,6 @@ export default function App() {
         if (repRes.ok) {
           const reportData = await repRes.json();
           setCurrentReport(reportData);
-          setPortfolioRefreshKey((value) => value + 1);
           setIsHistoricalReport(false);
           priorCurrentReportRef.current = null;
           showToast('Research completed successfully.');
@@ -898,7 +691,6 @@ export default function App() {
       const report = await res.json();
       if (!isHistoricalReport) priorCurrentReportRef.current = currentReport;
       setCurrentReport(report);
-      setPortfolioRefreshKey((value) => value + 1);
       eventOffsetRef.current = 0;
       setResearchEvents([]);
       await loadResearchEvents(jobId, true);
@@ -985,7 +777,7 @@ export default function App() {
                 </span>
               </div>
               <p className="text-xs text-[var(--text-muted)] font-mono">
-                Evidence-driven stock market &amp; portfolio intelligence
+                Evidence-driven stock market intelligence
               </p>
             </div>
           </div>
@@ -1033,8 +825,7 @@ export default function App() {
         <nav className="flex items-center gap-2 border-b border-[var(--border-color)] mb-6 overflow-x-auto pb-1">
           {[
             { id: 'research', label: 'RESEARCH PIPELINE', icon: 'fa-microscope' },
-            { id: 'portfolio', label: 'ADOBE PORTFOLIO', icon: 'fa-images' },
-            { id: 'instructions', label: 'INSTRUCTIONS & REJECTIONS', icon: 'fa-sliders' },
+            { id: 'rejected', label: 'REJECTED DATA', icon: 'fa-ban' },
             { id: 'history', label: 'HISTORY', icon: 'fa-clock-rotate-left' },
             { id: 'proxy', label: 'PROXY', icon: 'fa-shield-halved' },
             { id: 'settings', label: 'SYSTEM CONFIG', icon: 'fa-gear' }
@@ -1064,13 +855,13 @@ export default function App() {
               <div>
                 <label className="block text-[0.68rem] font-bold font-mono tracking-wider text-[var(--text-dim)] uppercase mb-1">Research objective / niche</label>
                 <textarea value={researchNiche} disabled={isResearching} onChange={(e) => { setResearchNiche(e.target.value); localStorage.setItem('as_radar_x_research_niche', e.target.value); }} placeholder="Leave blank for autonomous discovery across industries, or describe the market question to investigate..." rows={2} className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded-lg p-3 text-xs font-mono text-[var(--text-main)] outline-none resize-y" />
-                <p className="text-[0.64rem] text-[var(--text-dim)] mt-1">Gemini discovers its own search queries, sites, listings and follow-up pages. No fixed niche or URL watchlist.</p>
+                <p className="text-[0.64rem] text-[var(--text-dim)] mt-1">Researches public stock marketplaces, buyer use cases and industry sources. Adobe Contributor account data is never accessed.</p>
               </div>
               <div className="flex flex-wrap items-end gap-4">
                 <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Photo ideas</label><select value={photoCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setPhotoCount(v); localStorage.setItem('as_radar_x_photo_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[0,1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
                 <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Video ideas</label><select value={videoCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setVideoCount(v); localStorage.setItem('as_radar_x_video_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[0,1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
                 <div><label className="block text-[0.65rem] font-bold font-mono text-[var(--text-dim)] uppercase mb-1">Tags per idea</label><select value={tagCount} disabled={isResearching} onChange={(e) => { const v = Number(e.target.value); setTagCount(v); localStorage.setItem('as_radar_x_tag_count', String(v)); }} className="bg-[var(--bg-input)] border border-[var(--border-color)] rounded py-2 px-3 text-xs font-mono text-[var(--text-main)]">{[5,10,15,20,25,30,35,40,50].map(n => <option key={n} value={n}>{n}</option>)}</select></div>
-                <details className="flex-1 min-w-[230px]"><summary className="cursor-pointer text-[0.68rem] font-mono text-[var(--text-muted)] py-2">Optional title instructions</summary><textarea value={titleInstructions} disabled={isResearching} onChange={(e) => { setTitleInstructions(e.target.value); localStorage.setItem('as_radar_x_title_instructions', e.target.value); }} rows={2} placeholder="Leave blank to infer style from marketplace titles observed during this research." className="w-full mt-1 bg-[var(--bg-input)] border border-[var(--border-color)] rounded p-2 text-xs font-mono text-[var(--text-main)]" /></details>
+
                 <div className="ml-auto flex items-center gap-3">{isResearching && <div className="font-mono text-xs text-[var(--text-dim)]">Elapsed <b className="text-[var(--accent-amber)]">{formatTimer(elapsedSeconds)}</b></div>}<button onClick={handleStartResearch} disabled={isResearching || (photoCount === 0 && videoCount === 0)} className="py-2.5 px-6 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-50 text-black font-bold font-mono text-xs uppercase tracking-wider rounded shadow-md transition flex items-center gap-2"><i className={'fa-solid ' + (isResearching ? 'fa-spinner fa-spin' : 'fa-play')}></i><span>{isResearching ? 'RESEARCHING...' : 'START DEEP RESEARCH'}</span></button></div>
               </div>
             </div>
@@ -1166,16 +957,6 @@ export default function App() {
                       <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Highest score</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.score_summary.highest}/100</div></div>
                       <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Scored opportunities</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.score_summary.scored}</div></div>
                       <div className="p-3 rounded-lg bg-[var(--bg-input)] border border-[var(--border-subtle)]"><div className="text-[0.62rem] text-[var(--text-dim)] uppercase">Normalized pages</div><div className="text-xl font-black text-[var(--text-main)]">{currentReport.analysis_stats?.deduplicated_evidence_count ?? currentReport.browser_research?.pages ?? 0}</div></div>
-                    </div>
-                  )}
-                  {currentReport.portfolio_summary && (
-                    <div className="flex flex-wrap gap-2 mb-4 text-[0.68rem] font-mono">
-                      <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">Portfolio rows {currentReport.portfolio_summary.rowCount}</span>
-                      {currentReport.portfolio_summary.accepted != null && <span className="px-2 py-1 bg-emerald-500/10 text-emerald-300 rounded">Accepted {currentReport.portfolio_summary.accepted}</span>}
-                      {currentReport.portfolio_summary.rejected != null && <span className="px-2 py-1 bg-rose-500/10 text-rose-300 rounded">Rejected {currentReport.portfolio_summary.rejected}</span>}
-                      {currentReport.portfolio_summary.pending != null && <span className="px-2 py-1 bg-amber-500/10 text-amber-200 rounded">In review {currentReport.portfolio_summary.pending}</span>}
-                      {currentReport.portfolio_summary.totalDownloads != null && <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">Downloads {currentReport.portfolio_summary.totalDownloads}</span>}
-                      {currentReport.portfolio_summary.changedAssets != null && <span className="px-2 py-1 bg-[var(--bg-input)] rounded border border-[var(--border-subtle)]">{currentReport.portfolio_summary.changedAssets} asset changes</span>}
                     </div>
                   )}
                   {currentReport.browser_research && (
@@ -1281,224 +1062,28 @@ export default function App() {
                   Ready for Deep Market Research
                 </h3>
                 <p className="text-xs text-[var(--text-dim)] max-w-lg mx-auto leading-relaxed">
-                  Set photo/video targets above, leave Adobe Contributor signed in when the browser opens, then click{' '}
-                  <strong className="text-[var(--accent-amber)]">&quot;START DEEP RESEARCH&quot;</strong> to generate data-driven stock content opportunities.
+                  Set photo/video targets above, then start research. The browser uses public marketplace pages only; no Adobe account sign-in is needed or accessed.
                 </p>
               </div>
             )}
           </div>
         )}
 
-        {activeTab === 'portfolio' && (
-          <div className="space-y-4">
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl p-4">
-              <h2 className="text-sm font-bold text-[var(--text-main)] uppercase">Adobe Contributor Portfolio</h2>
-              <p className="text-[0.68rem] text-[var(--text-dim)] mt-1">Visible portfolio records, accepted/rejected/pending statuses and any displayed performance fields are synced automatically during research. Unknown values stay blank rather than being guessed.</p>
-            </div>
-            <PortfolioTable refreshKey={portfolioRefreshKey} />
-          </div>
-        )}
-
-        {/* ========================================================
-             TAB 3: INSTRUCTIONS & REJECTIONS
-             ======================================================== */}
-        {activeTab === 'instructions' && (
-          <div className="space-y-6 max-w-4xl">
-            {/* Custom Instructions */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-                <div>
-                  <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
-                    <i className="fa-solid fa-sliders text-[var(--accent-amber)]"></i>
-                    <span>Analyst Guidance &amp; Niche Directives</span>
-                  </h3>
-                  <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
-                    Direct Gemini toward specific industries, visual styles, or buyer personas.
-                  </span>
-                </div>
-              </div>
-
-              <textarea
-                value={instructionsText}
-                onChange={(e) => setInstructionsText(e.target.value)}
-                placeholder="e.g. Focus heavily on authentic video editing b-roll, modern sustainable warehouse logistics, clean Scandinavian healthcare aesthetic..."
-                rows={4}
-                className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-3 text-xs font-mono text-[var(--text-main)] outline-none leading-relaxed"
-              ></textarea>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleSaveInstructions}
-                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] text-black font-bold font-mono text-xs uppercase rounded transition"
-                >
-                  Save Instructions
-                </button>
-                <button
-                  onClick={handleClearInstructions}
-                  className="py-2 px-3 bg-[var(--bg-panel)] hover:bg-[var(--bg-card-hover)] border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-
-            {/* Reference PDF Document & Visual Directives */}
-            <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[var(--border-subtle)] gap-2">
-                <div>
-                  <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
-                    <i className="fa-solid fa-file-pdf text-rose-400"></i>
-                    <span>Reference PDF Document &amp; Visual Directives</span>
-                  </h3>
-                  <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
-                    Upload a PDF document for Gemini to inspect pages, photography, composition, and visual guidelines directly.
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[0.65rem] font-mono font-bold uppercase ${
-                      pdfConfig.hasPdf
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                        : pendingPdfFile
-                        ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                    }`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        pdfConfig.hasPdf ? 'bg-emerald-400' : pendingPdfFile ? 'bg-amber-400 animate-pulse' : 'bg-zinc-500'
-                      }`}
-                    ></span>
-                    {pdfConfig.hasPdf
-                      ? 'ATTACHED & PERSISTED'
-                      : pendingPdfFile
-                      ? 'READY TO SAVE'
-                      : 'NO PDF ATTACHED'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Upload Zone / Document details */}
-              <div className="p-4 bg-[var(--bg-input)] border border-[var(--border-subtle)] rounded-lg font-mono text-xs space-y-3">
-                {pdfConfig.hasPdf || pendingPdfFile ? (
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 text-lg shrink-0">
-                        <i className="fa-solid fa-file-pdf"></i>
-                      </div>
-                      <div>
-                        <div className="font-bold text-[var(--text-main)] text-xs flex items-center gap-2">
-                          <span>{pendingPdfFile ? pendingPdfFile.name : pdfConfig.fileName}</span>
-                          {pendingPdfFile && (
-                            <span className="px-1.5 py-0.2 bg-amber-500/20 text-amber-300 text-[0.60rem] rounded font-mono">
-                              UNSAVED
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[0.68rem] text-[var(--text-dim)] mt-0.5">
-                          Size:{' '}
-                          {Math.round(
-                            (pendingPdfFile ? pendingPdfFile.size : pdfConfig.fileSize) / 1024
-                          )}{' '}
-                          KB &bull;{' '}
-                          {pdfConfig.uploadedAt
-                            ? `Attached on ${new Date(pdfConfig.uploadedAt).toLocaleDateString()}`
-                            : 'Ready to save'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <label className="py-1.5 px-3 bg-[var(--bg-input)] hover:border-[var(--accent-amber)] border border-[var(--border-color)] rounded text-[0.68rem] font-mono text-[var(--text-muted)] cursor-pointer text-center">
-                      <i className="fa-solid fa-arrow-rotate-right mr-1.5"></i>
-                      Change PDF
-                      <input
-                        type="file"
-                        accept="application/pdf"
-                        onChange={handlePdfFileSelect}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-                ) : (
-                  <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-[var(--border-color)] hover:border-[var(--accent-amber)] rounded-lg cursor-pointer transition bg-[var(--bg-panel)]/40 hover:bg-[var(--bg-panel)]/80">
-                    <i className="fa-solid fa-cloud-arrow-up text-2xl text-[var(--accent-amber)] mb-2"></i>
-                    <span className="text-xs font-bold text-[var(--text-main)] mb-1">
-                      Click or drag a PDF document here to attach
-                    </span>
-                    <span className="text-[0.66rem] text-[var(--text-dim)] text-center">
-                      PDF pages, photos, and visual specifications will be visually analyzed by Gemini during research (Max 30MB)
-                    </span>
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      onChange={handlePdfFileSelect}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-
-                {pdfUploadError && (
-                  <div className="p-2.5 bg-red-500/10 border border-red-500/30 rounded text-red-300 text-[0.72rem] flex items-center gap-2">
-                    <i className="fa-solid fa-triangle-exclamation text-red-400"></i>
-                    <span>{pdfUploadError}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Directives for this specific PDF */}
-              <div>
-                <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-mono font-bold mb-1.5 flex items-center justify-between">
-                  <span>PDF Specific Analysis Directives &amp; Instructions</span>
-                  <span className="text-[0.60rem] lowercase text-[var(--text-dim)] font-normal">
-                    (tells Gemini what to examine inside this PDF)
-                  </span>
-                </label>
-                <textarea
-                  value={pdfDirectivesInput}
-                  onChange={(e) => setPdfDirectivesInput(e.target.value)}
-                  placeholder="e.g. Inspect the clinical equipment on pages 4-7, examine the lighting and camera framing in the photo spread, extract missing b-roll opportunities, avoid plastic packaging shown on page 10..."
-                  rows={4}
-                  className="w-full bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded p-3 text-xs font-mono text-[var(--text-main)] outline-none leading-relaxed"
-                ></textarea>
-              </div>
-
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  onClick={handleSavePdfConfig}
-                  disabled={isSavingPdf || (!pendingPdfFile && !pdfConfig.hasPdf)}
-                  className="py-2 px-4 bg-[var(--accent-amber)] hover:bg-[var(--accent-amber-hover)] disabled:opacity-40 text-black font-bold font-mono text-xs uppercase rounded transition flex items-center gap-1.5 cursor-pointer"
-                >
-                  <i className={`fa-solid ${isSavingPdf ? 'fa-spinner fa-spin' : 'fa-floppy-disk'}`}></i>
-                  <span>{isSavingPdf ? 'SAVING...' : 'SAVE PDF & DIRECTIVES'}</span>
-                </button>
-
-                {(pdfConfig.hasPdf || pendingPdfFile) && (
-                  <button
-                    onClick={handleClearPdfConfig}
-                    disabled={isClearingPdf}
-                    className="py-2 px-3.5 bg-[var(--bg-panel)] hover:bg-red-500/10 hover:border-red-500/40 hover:text-red-300 border border-[var(--border-color)] rounded font-mono text-xs text-[var(--text-main)] transition flex items-center gap-1.5 cursor-pointer"
-                    title="Clear attached PDF and directives"
-                  >
-                    <i className={`fa-solid ${isClearingPdf ? 'fa-spinner fa-spin' : 'fa-trash-can'}`}></i>
-                    <span>CLEAR PDF</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Rejection / Exclusion Memory */}
+        {activeTab === 'rejected' && (
+          <div className="space-y-4 max-w-4xl">
             <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-lg p-5 shadow-lg space-y-4">
               <div className="pb-3 border-b border-[var(--border-subtle)]">
-                <h3 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
+                <h2 className="text-sm font-bold font-brand uppercase tracking-wider text-[var(--text-main)] flex items-center gap-2">
                   <i className="fa-solid fa-ban text-red-400"></i>
-                  <span>Exclusion &amp; Anti-Cliché Memory</span>
-                </h3>
-                <span className="text-[0.66rem] text-[var(--text-dim)] font-mono">
-                  Concepts, styles, or clichés strictly blocked from appearing in generated opportunities.
-                </span>
+                  <span>Rejected Data &amp; Research Exclusions</span>
+                </h2>
+                <p className="text-[0.68rem] text-[var(--text-dim)] font-mono mt-1">
+                  Add rejected subjects, visual styles, and concepts to exclude from future recommendations.
+                </p>
               </div>
-
+              <p className="text-[0.68rem] text-[var(--text-dim)]">
+                This list is the only saved personal context sent to the configured AI provider. Research uses public web pages only. Adobe Contributor profile, uploads, earnings, downloads, and account status are not accessed.
+              </p>
               <div className="space-y-2">
                 {rejectedItems.map((item, idx) => (
                   <div key={idx} className="flex items-center gap-2">
@@ -1516,7 +1101,6 @@ export default function App() {
                     </button>
                   </div>
                 ))}
-
                 <div className="flex items-center gap-2 pt-2">
                   <input
                     type="text"
@@ -1528,7 +1112,7 @@ export default function App() {
                         handleAddOrUpdateRejection(rejectedItems.length, newRejectionInput);
                       }
                     }}
-                    placeholder="Add concept to exclude (e.g. plastic ai smiles, generic handshakes)..."
+                    placeholder="Add rejected concept or style to exclude..."
                     className="flex-1 bg-[var(--bg-input)] border border-[var(--border-color)] focus:border-[var(--accent-amber)] rounded py-1.5 px-3 text-xs font-mono text-[var(--text-main)] outline-none"
                   />
                   <button
