@@ -28,7 +28,7 @@ export default function App() {
   const [photoCount, setPhotoCount] = useState<number>(5);
   const [videoCount, setVideoCount] = useState<number>(3);
   const [isResearching, setIsResearching] = useState<boolean>(false);
-  const [researchStage, setResearchStage] = useState<ResearchStage>('INITIALIZING');
+  const [researchStage, setResearchStage] = useState<ResearchStage>('PLANNING');
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [progressMessage, setProgressMessage] = useState<string>('Initializing research engine...');
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
