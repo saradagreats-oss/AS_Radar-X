@@ -173,7 +173,8 @@ class ResearchCoordinator {
       if (latestPortfolio?.summary) {
         const p: any = latestPortfolio.summary;
         const old: any = previousPortfolio?.summary || {};
-        const changedAssets = storage.getPortfolioAssetsForJob(jobId).length;
+        const syncedAssets = storage.getPortfolioAssetsForJob(jobId).length;
+        const changedAssets = storage.getPortfolioChanges(jobId).length;
         portfolioSummary = {
           rowCount: Number(p.rowCount) || 0,
           accepted: p.accepted ?? null,
@@ -181,6 +182,7 @@ class ResearchCoordinator {
           pending: p.pending ?? null,
           totalDownloads: p.totalDownloads ?? null,
           changedAssets,
+          syncedAssets,
           sourceUrl: latestPortfolio.sourceUrl,
           capturedAt: latestPortfolio.capturedAt
         };
@@ -193,7 +195,7 @@ class ResearchCoordinator {
           id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type: 'portfolio_delta',
           message: deltas.length ? `Portfolio changes since previous snapshot: ${deltas.join(', ')}` : 'Latest portfolio snapshot saved. Previous comparable totals were not available.',
           url: latestPortfolio.sourceUrl,
-          details: { changedAssets, deltas, current: portfolioSummary, previous: old }
+          details: { changedAssets, syncedAssets, changes: storage.getPortfolioChanges(jobId), deltas, current: portfolioSummary, previous: old }
         });
       } else {
         warnings.push('Adobe Contributor portfolio could not be read in this run. Previous locally stored portfolio data has been retained; no new status or download figures were guessed.');
@@ -235,7 +237,7 @@ class ResearchCoordinator {
       const status: Record<string, CollectorStatus> = {
         'Gemini Computer Use': agentResult?.model ? 'AVAILABLE' : 'ERROR',
         'Visible stock and commercial web pages': evidenceSources.length ? 'AVAILABLE' : 'EMPTY',
-        'Adobe Contributor portfolio': latestPortfolio ? 'AVAILABLE' : 'UNAVAILABLE'
+        'Adobe Contributor portfolio': latestPortfolio && Number((latestPortfolio.summary as any)?.rowCount || 0) > 0 ? 'AVAILABLE' : 'UNAVAILABLE'
       };
       const sourceNames = Array.from(new Set(evidenceSources.map(source => source.source_family || 'Public web')));
       if (latestPortfolio) sourceNames.push('Adobe Contributor Portfolio');
@@ -324,7 +326,7 @@ class ResearchCoordinator {
       storage.saveReport(report);
       const job = this.activeJobs.get(jobId);
       if (job) {
-        job.status = report.status === 'COMPLETED' ? 'COMPLETED' : 'COMPLETED';
+        job.status = 'COMPLETED';
         job.stage = 'COMPLETE';
         job.progress = 100;
         job.message = report.status === 'COMPLETED' ? 'Evidence-backed report is ready.' : 'Research completed; there was not enough evidence for a reliable opportunity set.';
