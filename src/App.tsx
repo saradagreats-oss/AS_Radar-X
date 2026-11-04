@@ -479,13 +479,13 @@ export default function App() {
       isLoading: true
     });
     try {
-      const res = await fetch(getApiUrl(`/api/evidence/${encodeURIComponent(jobId)}`));
+      const res = await fetch(getApiUrl(`/api/research/events/${encodeURIComponent(jobId)}`));
       if (res.ok) {
         const data = await res.json();
         setEvidenceModal({
           isOpen: true,
           jobId,
-          items: data.evidence || [],
+          items: data.events || [],
           isLoading: false
         });
       } else {
