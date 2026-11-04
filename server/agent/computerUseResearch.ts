@@ -190,7 +190,7 @@ async function createInteractionWithRetry(
   throw new Error(`Gemini Computer Use follow-up request failed on "${model}" after retries: ${String(lastError?.message || lastError)}`);
 }
 
-export async function runComputerUseResearch(input: { jobId: string; niche: string; rejectedItems?: string[]; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void; rejectedItems?: string[] }) {
+export async function runComputerUseResearch(input: { jobId: string; niche: string; rejectedItems?: string[]; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void }) {
   const key = storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '';
   if (!key) throw new Error('Set a Gemini API key in Settings before starting research.');
   if (!browserBridge.available) throw new Error('Computer-use research requires the Windows desktop application.');
