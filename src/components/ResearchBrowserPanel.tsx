@@ -92,6 +92,18 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
         <div><span className="text-[var(--text-dim)]">SCREENSHOTS</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'browser_action' && e.details?.screenshot).length}</div></div>
         <div><span className="text-[var(--text-dim)]">PORTFOLIO</span><div className="text-[var(--text-main)] font-bold">{events.filter((e) => e.type === 'portfolio_synced').slice(-1)[0]?.details?.assetsFound ?? '—'} records</div></div>
       </div>
+      {jobId && events.some((event) => event.type === 'browser_action' && event.details?.screenshot) && (
+        <details className="border-t border-[var(--border-subtle)] px-4 py-2">
+          <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">CAPTURED RESEARCH SCREENSHOTS</summary>
+          <div className="pt-3 space-y-2">
+            {[...events].filter((event) => event.type === 'browser_action' && event.details?.screenshot).slice(-8).reverse().map((event) => {
+              const file = String(event.details.screenshot).split('/').pop();
+              const href = '/api/research/screenshots/' + encodeURIComponent(jobId) + '/' + encodeURIComponent(file || '');
+              return <a key={event.id} href={href} target="_blank" rel="noreferrer" className="block text-[0.66rem] text-[var(--accent-amber)] hover:underline break-all">{event.details.pageTitle || event.url || event.at} · Open captured screenshot</a>;
+            })}
+          </div>
+        </details>
+      )}
       {latestActivity.length > 0 && (
         <details className="border-t border-[var(--border-subtle)] px-4 py-2">
           <summary className="cursor-pointer text-[0.68rem] font-bold text-[var(--text-muted)]">RECENT AGENT ACTIVITY</summary>
