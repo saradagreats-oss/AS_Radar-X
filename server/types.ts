@@ -1,6 +1,6 @@
 export type CollectorStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'ERROR' | 'BLOCKED' | 'EMPTY' | 'DISABLED';
 
-export type DataSourceType = 'Browser Research' | 'Adobe Stock Portfolio' | 'AI Intelligence';
+export type DataSourceType = 'Browser Research' | 'AI Intelligence';
 
 export interface RawEvidence {
   source: DataSourceType;
@@ -159,18 +159,6 @@ export interface SourceEvidenceRecord {
   observation?: string;
 }
 
-export interface PortfolioSummary {
-  rowCount: number;
-  accepted?: number | null;
-  rejected?: number | null;
-  pending?: number | null;
-  totalDownloads?: number | null;
-  changedAssets?: number;
-  syncedAssets?: number;
-  sourceUrl?: string;
-  capturedAt?: string;
-}
-
 export interface PhotoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and visual context
@@ -243,7 +231,6 @@ export interface ResearchReport {
   warnings?: string[];
   internal_score_explanation?: string;
   score_summary?: { average: number; highest: number; scored: number; formula: string };
-  portfolio_summary?: PortfolioSummary | null;
   browser_research?: { pages: number; actions: number; screenshots: number; model: string; turn_limit_reached?: boolean };
   evidence_sources?: SourceEvidenceRecord[];
   analysis_stats?: {
@@ -273,7 +260,6 @@ export type ResearchStage =
   | 'BROWSER_RESEARCH'
   | 'PAUSED_FOR_USER'
   | 'FINAL_ANALYSIS'
-  | 'PORTFOLIO_SYNC'
   | 'COLLECTING'
   | 'NORMALIZING'
   | 'DEDUPLICATING'
@@ -283,7 +269,6 @@ export type ResearchStage =
   | 'COMMERCIAL_USE'
   | 'LONGEVITY'
   | 'SCORING'
-  | 'PDF_ANALYSIS'
   | 'PREPARING_PHOTOS'
   | 'PREPARING_VIDEOS'
   | 'COMPLETE';
