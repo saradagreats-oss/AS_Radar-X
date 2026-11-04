@@ -125,7 +125,8 @@ async function runTests() {
   assert(agentSource.includes('REJECTED DATA / EXCLUSIONS'), 'browser agent receives the saved rejection list as its only saved user context');
   assert(!browserBridgeSource.includes('portfolioRows'), 'browser snapshots do not expose portfolio row extraction');
   assert(electronSource.includes("host === 'contributor.stock.adobe.com'") && !electronSource.includes('portfolioRows'), 'desktop browser blocks private contributor pages and never scrapes portfolio rows');
-  assert(electronSource.includes("persist:as-radar-public-research-v2"), 'public research uses a fresh anonymous browser session');
+  assert(electronSource.includes("researchSession.webRequest.onBeforeRequest") && electronSource.includes("'will-redirect'"), 'contributor requests and redirects are blocked at the browser boundary');
+  assert(electronSource.includes("as-radar-public-research-v2") && !electronSource.includes("persist:as-radar-public-research-v2"), 'public research uses a ephemeral anonymous browser session');
   assert(!serverSource.includes('/api/portfolio/assets') && !appSource.includes('PortfolioTable'), 'portfolio tab and API are removed');
   assert(!researcherSource.includes('getInstructions') && !researcherSource.includes('getPdfDocument') && !analystSource.includes('LIVE PORTFOLIO SNAPSHOT'), 'custom instruction, PDF and profile data are excluded from model requests');
   assert(storageSource.includes('DROP TABLE IF EXISTS portfolio_assets') && storageSource.includes("DELETE FROM user_settings WHERE key IN ('gemini_instructions', 'pdf_document_config')"), 'legacy portfolio, instruction and PDF records are removed locally');
