@@ -188,9 +188,23 @@ class StorageManager {
       if (fs.existsSync(reportsFile)) {
         const raw = fs.readFileSync(reportsFile, 'utf8');
         const list: ResearchReport[] = JSON.parse(raw);
-        for (const r of list) {
-          this.memoryFallback.reports.set(r.job_id, r);
-        }
+        const cleaned = list.map((report: any) => {
+          const safe = { ...report };
+          delete safe.portfolio_summary;
+          safe.sources_processed = Array.isArray(safe.sources_processed)
+            ? safe.sources_processed.filter((name: string) => !/adobe contributor portfolio/i.test(String(name)))
+            : safe.sources_processed;
+          if (safe.source_status) delete safe.source_status['Adobe Contributor portfolio'];
+          if (Array.isArray(safe.evidence_sources)) {
+            safe.evidence_sources = safe.evidence_sources.filter((source: any) => !/contributor\.stock\.adobe\.com/i.test(String(source.url || '')));
+          }
+          if (safe.web_research && Array.isArray(safe.web_research.sources)) {
+            safe.web_research.sources = safe.web_research.sources.filter((source: any) => !/contributor\.stock\.adobe\.com/i.test(String(source.url || '')));
+          }
+          return safe as ResearchReport;
+        });
+        for (const report of cleaned) this.memoryFallback.reports.set(report.job_id, report);
+        fs.writeFileSync(reportsFile, JSON.stringify(cleaned, null, 2), 'utf8');
       }
 
       const settingsFile = path.join(DATA_DIR, 'settings_fallback.json');
