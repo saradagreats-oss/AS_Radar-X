@@ -257,7 +257,7 @@ app.get('/api/evidence/:jobId', (req: Request, res: Response) => {
   res.json({ job_id: jobId, evidence: items, count: items.length });
 });
 
-// Legacy Reddit/Discord settings are intentionally no longer active in AS-Radar-X's research pipeline.
+// Community collectors have been retired; all new research runs through the local browser agent.
 
 // Proxy settings (HTTP or V2Ray SOCKS5)
 app.get('/api/proxy/config', (_req: Request, res: Response) => {
@@ -431,7 +431,7 @@ async function startServer() {
     }
   }
 
-  const host = process.env.AS_RADAR_LOCAL_ONLY === 'true' ? '127.0.0.1' : '0.0.0.0';
+  const host = '127.0.0.1';
   const listener = app.listen(PORT, host, () => {
     const address = listener.address();
     const actualPort = typeof address === 'object' && address ? address.port : PORT;
