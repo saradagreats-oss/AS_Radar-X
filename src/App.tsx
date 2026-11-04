@@ -1236,7 +1236,7 @@ export default function App() {
                 </h3>
                 <p className="text-xs text-[var(--text-dim)] max-w-lg mx-auto leading-relaxed">
                   Set photo/video targets above, leave Adobe Contributor signed in when the browser opens, then click{' '}
-                  <strong className="text-[var(--accent-amber)]">&quot;RUN RESEARCH PIPELINE&quot;</strong> to generate data-driven stock content opportunities.
+                  <strong className="text-[var(--accent-amber)]">&quot;START DEEP RESEARCH&quot;</strong> to generate data-driven stock content opportunities.
                 </p>
               </div>
             )}
