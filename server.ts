@@ -8,8 +8,6 @@ import { researchCoordinator } from './server/researcher.js';
 import { storage } from './server/storage/database.js';
 import { applyProxySettings, testProxyConnection } from './server/proxy.js';
 import { listAvailableGeminiModels } from './server/gemini/models.js';
-import { RedditCollector } from './server/collectors/reddit.js';
-import { DiscordCollector } from './server/collectors/discord.js';
 import { resumeComputerUse } from './server/agent/computerUseResearch.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -57,8 +55,15 @@ app.post('/api/research', (req: Request, res: Response) => {
       return;
     }
 
-    const jobId = researchCoordinator.createJob(photoCount, videoCount);
-    res.json({ job_id: jobId, status: 'RUNNING', photo_count: photoCount, video_count: videoCount });
+    const niche = typeof req.body?.niche === 'string' ? req.body.niche.trim().slice(0, 3000) : '';
+    const titleInstructions = typeof req.body?.title_instructions === 'string' ? req.body.title_instructions.trim().slice(0, 1200) : '';
+    const tagCount = req.body?.tag_count === undefined ? 25 : Number(req.body.tag_count);
+    if (!Number.isInteger(tagCount) || tagCount < 1 || tagCount > 50) {
+      res.status(400).json({ error: 'Tag count must be between 1 and 50.' });
+      return;
+    }
+    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount });
+    res.json({ job_id: jobId, status: 'RUNNING', photo_count: photoCount, video_count: videoCount, tag_count: tagCount });
   } catch (err: any) {
     console.error('Error starting research:', err);
     res.status(500).json({ error: err.message || 'Failed to initialize research job.' });
@@ -228,212 +233,7 @@ app.get('/api/evidence/:jobId', (req: Request, res: Response) => {
   res.json({ job_id: jobId, evidence: items, count: items.length });
 });
 
-// 8. Platform Data Configuration (Toggle)
-app.get('/api/platform-data', (_req: Request, res: Response) => {
-  res.json({ enabled: storage.getPlatformDataEnabled() });
-});
-
-app.post('/api/platform-data', (req: Request, res: Response) => {
-  const enabled = req.body?.enabled !== undefined ? !!req.body.enabled : true;
-  storage.savePlatformDataEnabled(enabled);
-  res.json({ success: true, enabled: storage.getPlatformDataEnabled() });
-});
-
-// 9. Reddit Configuration & Connection Testing
-app.get('/api/reddit/config', (_req: Request, res: Response) => {
-  res.json(storage.getMaskedRedditConfig());
-});
-
-app.post('/api/reddit/config', (req: Request, res: Response) => {
-  try {
-    const updated = storage.saveRedditConfig(req.body || {});
-    res.json({
-      success: true,
-      config: storage.getMaskedRedditConfig()
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || 'Failed saving Reddit config' });
-  }
-});
-
-app.post('/api/reddit/test', async (req: Request, res: Response) => {
-  try {
-    const collector = new RedditCollector();
-    const result = await collector.testConnection(req.body);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      message: err.message || 'Reddit connection test failed'
-    });
-  }
-});
-
-// 10. Discord Configuration & Connection Testing
-app.get('/api/discord/config', (_req: Request, res: Response) => {
-  res.json(storage.getMaskedDiscordConfig());
-});
-
-app.post('/api/discord/config', (req: Request, res: Response) => {
-  try {
-    const updated = storage.saveDiscordConfig(req.body || {});
-    res.json({
-      success: true,
-      config: storage.getMaskedDiscordConfig()
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || 'Failed saving Discord config' });
-  }
-});
-
-app.post('/api/discord/test', async (req: Request, res: Response) => {
-  try {
-    const collector = new DiscordCollector();
-    const result = await collector.testConnection(req.body);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      message: err.message || 'Discord connection test failed'
-    });
-  }
-});
-
-// 11. Live Sources Probe and Status (Reddit & Discord)
-let cachedProbe: any = null;
-let lastProbeTime = 0;
-const PROBE_CACHE_TTL = 3 * 60 * 1000; // 3 minutes cache
-
-async function runSourcesProbe(force: boolean = false) {
-  const now = Date.now();
-  if (!force && cachedProbe && now - lastProbeTime < PROBE_CACHE_TTL) {
-    return cachedProbe;
-  }
-
-  const redditCollector = new RedditCollector();
-  const discordCollector = new DiscordCollector();
-  const platformDataEnabled = storage.getPlatformDataEnabled();
-
-  const startTime = Date.now();
-  const [redditResults, discordResults] = await Promise.all([
-    redditCollector.collect(),
-    discordCollector.collect()
-  ]);
-  const duration = `${Math.round((Date.now() - startTime) / 1000)}s`;
-
-  const mapResults = (name: string, results: any[]) => {
-    const isAvail = results.some((r) => r.status === 'AVAILABLE');
-    const isBlocked = results.every((r) => r.status === 'BLOCKED');
-    const overall = !platformDataEnabled
-      ? 'DISABLED'
-      : isAvail
-        ? 'AVAILABLE'
-        : isBlocked
-          ? 'BLOCKED'
-          : results[0]?.status || 'UNAVAILABLE';
-    const evidence = results.flatMap((r) => r.evidence || []);
-
-    return {
-      source: name,
-      overall,
-      endpoints: results.map((r) => ({
-        subSource: r.subSource,
-        url: r.url,
-        status: !platformDataEnabled ? 'DISABLED' : r.status,
-        evidenceCount: (r.evidence || []).length,
-        notes: r.notes || r.error || undefined
-      })),
-      evidenceCount: evidence.length,
-      evidenceSample: evidence.slice(0, 5)
-    };
-  };
-
-  const redditConfig = storage.getRedditConfig();
-  const discordConfig = storage.getDiscordConfig();
-
-  const responseData = {
-    probedAt: new Date().toISOString(),
-    duration,
-    platformDataEnabled,
-    sources: {
-      Reddit: {
-        ...mapResults('Reddit', redditResults),
-        configuredSubreddits: redditConfig.subreddits,
-        timeframe: redditConfig.timeframe,
-        collectPosts: redditConfig.collectPosts,
-        collectComments: redditConfig.collectComments,
-        lastCollectedAt: redditConfig.lastCollectedAt,
-        totalCollectedCount: redditConfig.collectedCount || 0
-      },
-      Discord: {
-        ...mapResults('Discord', discordResults),
-        guildCount: (discordConfig.guilds || []).length,
-        timeframe: discordConfig.timeframe,
-        collectMessages: discordConfig.collectMessages,
-        collectThreads: discordConfig.collectThreads,
-        lastCollectedAt: discordConfig.lastCollectedAt,
-        totalCollectedCount: discordConfig.collectedCount || 0
-      }
-    },
-    totalEvidenceCount:
-      redditResults.flatMap((r) => r.evidence).length +
-      discordResults.flatMap((r) => r.evidence).length
-  };
-
-  cachedProbe = responseData;
-  lastProbeTime = now;
-  return responseData;
-}
-
-// Quick status overview
-app.get('/api/sources/status', async (_req: Request, res: Response) => {
-  try {
-    const probe = await runSourcesProbe(false);
-    res.json({
-      probedAt: probe.probedAt,
-      platformDataEnabled: probe.platformDataEnabled,
-      sources: {
-        Reddit: {
-          overall: probe.sources.Reddit.overall,
-          evidenceCount: probe.sources.Reddit.evidenceCount,
-          lastCollectedAt: probe.sources.Reddit.lastCollectedAt,
-          totalCollectedCount: probe.sources.Reddit.totalCollectedCount,
-          endpoints: probe.sources.Reddit.endpoints
-        },
-        Discord: {
-          overall: probe.sources.Discord.overall,
-          evidenceCount: probe.sources.Discord.evidenceCount,
-          lastCollectedAt: probe.sources.Discord.lastCollectedAt,
-          totalCollectedCount: probe.sources.Discord.totalCollectedCount,
-          endpoints: probe.sources.Discord.endpoints
-        }
-      },
-      totalEvidenceCount: probe.totalEvidenceCount
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to check sources status' });
-  }
-});
-
-// Full active probe
-app.post('/api/sources/probe', async (_req: Request, res: Response) => {
-  try {
-    const probe = await runSourcesProbe(true);
-    res.json(probe);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Probe execution failed' });
-  }
-});
-
-app.get('/api/sources/probe', async (req: Request, res: Response) => {
-  try {
-    const force = req.query.force === 'true';
-    const probe = await runSourcesProbe(force);
-    res.json(probe);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Probe execution failed' });
-  }
-});
+// Legacy Reddit/Discord settings are intentionally no longer active in AS-Radar-X's research pipeline.
 
 // Proxy settings (HTTP or V2Ray SOCKS5)
 app.get('/api/proxy/config', (_req: Request, res: Response) => {
