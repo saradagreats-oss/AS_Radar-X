@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
@@ -295,7 +296,7 @@ class StorageManager {
         ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=excluded.downloads, earnings=excluded.earnings, last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
       for (const asset of assets) {
         const sourceId = String(asset.assetId || asset.id || '').trim();
-        const stableKey = sourceId ? 'adobe:' + sourceId : 'adobe:hash:' + require('node:crypto').createHash('sha256').update([asset.title, asset.status, asset.thumbnail].join('|')).digest('hex');
+        const stableKey = sourceId ? 'adobe:' + sourceId : 'adobe:hash:' + crypto.createHash('sha256').update([asset.title, asset.status, asset.thumbnail].join('|')).digest('hex');
         const old = this.db.prepare('SELECT first_seen_at FROM portfolio_assets WHERE asset_key = ?').get(stableKey) as any;
         stmt.run(stableKey, sourceId || null, String(asset.status || 'UNKNOWN'), String(asset.title || ''), String(asset.rejectionReason || ''), Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : null, Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : null, old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, sourceUrl }));
       }
@@ -306,7 +307,7 @@ class StorageManager {
     if (!this.db) return;
     try {
       this.db.prepare('INSERT INTO portfolio_snapshots (id, job_id, captured_at, source_url, summary_json) VALUES (?, ?, ?, ?, ?)')
-        .run(require('node:crypto').randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
+        .run(crypto.randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
     } catch (error) { console.error('SQLite savePortfolioSnapshot error:', error); }
   }
 
