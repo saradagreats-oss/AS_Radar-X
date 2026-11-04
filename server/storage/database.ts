@@ -150,6 +150,42 @@ class StorageManager {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS research_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        url TEXT,
+        details_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_research_events_job ON research_events(job_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS portfolio_assets (
+        asset_key TEXT PRIMARY KEY,
+        source_asset_id TEXT,
+        status TEXT,
+        title TEXT,
+        rejection_reason TEXT,
+        downloads INTEGER,
+        earnings REAL,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_job_id TEXT,
+        record_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_portfolio_status ON portfolio_assets(status);
+
+      CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        source_url TEXT,
+        summary_json TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS opportunity_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT NOT NULL,
@@ -232,6 +268,54 @@ class StorageManager {
     } catch (e) {
       console.error('Failed writing fallback files:', e);
     }
+  }
+
+  public appendResearchEvent(event: { id: string; jobId: string; at: string; type: string; message: string; url?: string; details?: Record<string, any> }) {
+    if (!this.db) return;
+    try {
+      this.db.prepare(`INSERT OR IGNORE INTO research_events (id, job_id, created_at, event_type, message, url, details_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(event.id, event.jobId, event.at, event.type, event.message, event.url || null, JSON.stringify(event.details || {}));
+    } catch (error) { console.error('SQLite appendResearchEvent error:', error); }
+  }
+
+  public getResearchEvents(jobId: string, after = 0) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM research_events WHERE job_id = ? ORDER BY created_at ASC LIMIT -1 OFFSET ?').all(jobId, Math.max(0, after)) as any[];
+      return rows.map(row => ({ id: row.id, jobId: row.job_id, at: row.created_at, type: row.event_type, message: row.message, url: row.url || undefined, details: JSON.parse(row.details_json || '{}') }));
+    } catch (error) { console.error('SQLite getResearchEvents error:', error); return []; }
+  }
+
+  public upsertPortfolioAssets(jobId: string, assets: Array<Record<string, any>>, sourceUrl = '') {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    try {
+      const stmt = this.db.prepare(`INSERT INTO portfolio_assets (asset_key, source_asset_id, status, title, rejection_reason, downloads, earnings, first_seen_at, last_seen_at, last_job_id, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(asset_key) DO UPDATE SET status=excluded.status, title=excluded.title, rejection_reason=excluded.rejection_reason, downloads=excluded.downloads, earnings=excluded.earnings, last_seen_at=excluded.last_seen_at, last_job_id=excluded.last_job_id, record_json=excluded.record_json`);
+      for (const asset of assets) {
+        const sourceId = String(asset.assetId || asset.id || '').trim();
+        const stableKey = sourceId ? 'adobe:' + sourceId : 'adobe:hash:' + require('node:crypto').createHash('sha256').update([asset.title, asset.status, asset.thumbnail].join('|')).digest('hex');
+        const old = this.db.prepare('SELECT first_seen_at FROM portfolio_assets WHERE asset_key = ?').get(stableKey) as any;
+        stmt.run(stableKey, sourceId || null, String(asset.status || 'UNKNOWN'), String(asset.title || ''), String(asset.rejectionReason || ''), Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : null, Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : null, old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, sourceUrl }));
+      }
+    } catch (error) { console.error('SQLite upsertPortfolioAssets error:', error); }
+  }
+
+  public savePortfolioSnapshot(jobId: string, sourceUrl: string, summary: Record<string, any>) {
+    if (!this.db) return;
+    try {
+      this.db.prepare('INSERT INTO portfolio_snapshots (id, job_id, captured_at, source_url, summary_json) VALUES (?, ?, ?, ?, ?)')
+        .run(require('node:crypto').randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
+    } catch (error) { console.error('SQLite savePortfolioSnapshot error:', error); }
+  }
+
+  public getPortfolioAssets() {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets ORDER BY last_seen_at DESC').all() as any[];
+      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
+    } catch (error) { console.error('SQLite getPortfolioAssets error:', error); return []; }
   }
 
   public saveReport(report: ResearchReport) {
