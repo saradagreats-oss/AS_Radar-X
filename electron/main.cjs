@@ -25,7 +25,7 @@ function safeHttpUrl(value) {
   try {
     const url = new URL(String(value || ''));
     if (!['http:', 'https:'].includes(url.protocol)) return null;
-    const host = url.hostname.toLowerCase().replace(/^\\[|\\]$/g, '');
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
     if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.test')) return null;
     if (net.isIP(host) === 4) {
       const p = host.split('.').map(Number);
