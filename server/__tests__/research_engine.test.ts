@@ -130,7 +130,7 @@ async function runTests() {
   assert(electronSource.includes('async function waitForResearchPageLoad') && electronSource.includes('await waitForResearchPageLoad()'), 'browser capture waits for page readiness after navigation starts');
   assert(electronSource.includes('Browser page failed to load:'), 'browser reports a specific page navigation failure');
   assert(!electronSource.includes('await researchBrowser.webContents.loadURL(url)'), 'browser show acknowledgement does not block on remote page load');
-  assert(browserBridgeSource.includes('request('capture', {}, 75000)') && browserBridgeSource.includes('request('show', { url }, 10000)'), 'browser bridge uses separate acknowledgement and page-capture timeouts');
+  assert(browserBridgeSource.includes("request('capture', {}, 75000)") && browserBridgeSource.includes("request('show', { url }, 10000)"), 'browser bridge uses separate acknowledgement and page-capture timeouts');
   assert(electronSource.includes("as-radar-public-research-v2") && !electronSource.includes("persist:as-radar-public-research-v2"), 'public research uses a ephemeral anonymous browser session');
   assert(!serverSource.includes('/api/portfolio/assets') && !appSource.includes('PortfolioTable'), 'portfolio tab and API are removed');
   assert(!researcherSource.includes('getInstructions') && !researcherSource.includes('getPdfDocument') && !analystSource.includes('LIVE PORTFOLIO SNAPSHOT'), 'custom instruction, PDF and profile data are excluded from model requests');
