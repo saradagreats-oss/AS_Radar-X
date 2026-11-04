@@ -13,6 +13,7 @@ let desktopProxyAuth = null;
 let researchBrowser = null;
 let browserVisible = false;
 let browserTakeover = false;
+let lastBrowserBounds = null;
 let researchSession = null;
 
 function sendBrowserEvent(payload) {
@@ -41,6 +42,7 @@ function attachResearchBrowser() {
   });
   mainWindow.contentView.addChildView(researchBrowser);
   researchBrowser.setVisible(false);
+  if (lastBrowserBounds) researchBrowser.setBounds(lastBrowserBounds);
   researchBrowser.webContents.setWindowOpenHandler(({ url }) => {
     const safe = safeHttpUrl(url);
     if (safe) require('electron').shell.openExternal(safe);
@@ -64,10 +66,11 @@ function attachResearchBrowser() {
 
 function updateResearchBrowserBounds(_event, bounds) {
   if (!researchBrowser || !mainWindow || mainWindow.isDestroyed()) return;
-  const b = bounds && Number.isFinite(bounds.x) ? bounds : { x: 0, y: 0, width: mainWindow.getContentBounds().width, height: mainWindow.getContentBounds().height };
+  const b = bounds && Number.isFinite(bounds.x) ? bounds : (lastBrowserBounds || { x: 0, y: 0, width: mainWindow.getContentBounds().width, height: mainWindow.getContentBounds().height });
   const width = Math.max(0, Math.min(10000, Math.round(b.width)));
   const height = Math.max(0, Math.min(10000, Math.round(b.height)));
-  researchBrowser.setBounds({ x: Math.max(0, Math.round(b.x)), y: Math.max(0, Math.round(b.y)), width, height });
+  lastBrowserBounds = { x: Math.max(0, Math.round(b.x)), y: Math.max(0, Math.round(b.y)), width, height };
+  researchBrowser.setBounds(lastBrowserBounds);
 }
 
 async function browserSnapshot() {
@@ -100,28 +103,35 @@ async function executeBrowserAction(action, args = {}) {
       await wc.loadURL(url);
       return { url: wc.getURL(), title: wc.getTitle() };
     }
-    case 'click': {
+    case 'pointer': {
       const bounds = researchBrowser.getBounds();
       const x = Math.max(0, Math.min(bounds.width - 1, Math.round((Number(args.x)||0) * bounds.width / 1000)));
       const y = Math.max(0, Math.min(bounds.height - 1, Math.round((Number(args.y)||0) * bounds.height / 1000)));
-      if (action === 'move') { wc.sendInputEvent({ type: 'mouseMove', x, y }); return { moved: true, x, y }; }
-      const clickCount = Math.max(1, Math.min(3, Number(args.clickCount) || 1));
       wc.sendInputEvent({ type: 'mouseMove', x, y });
-      wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount });
-      wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount });
-      return { clicked: true, x, y, clickCount };
+      const actionType = String(args.action || 'click');
+      if (actionType === 'move') return { moved: true, x, y };
+      const button = actionType === 'right_click' ? 'right' : actionType === 'middle_click' ? 'middle' : 'left';
+      const clickCount = actionType === 'double_click' ? 2 : actionType === 'triple_click' ? 3 : 1;
+      wc.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount });
+      wc.sendInputEvent({ type: 'mouseUp', x, y, button, clickCount });
+      return { clicked: true, x, y, button, clickCount };
     }
     case 'scroll': {
       const bounds = researchBrowser.getBounds();
-      const x = Math.max(0, Math.min(bounds.width - 1, Math.round((Number(args.x)||500) * bounds.width / 1000))), y = Math.max(0, Math.min(bounds.height - 1, Math.round((Number(args.y)||500) * bounds.height / 1000)));
+      const x = Math.max(0, Math.min(bounds.width - 1, Math.round((Number(args.x ?? 500) || 500) * bounds.width / 1000)));
+      const y = Math.max(0, Math.min(bounds.height - 1, Math.round((Number(args.y ?? 500) || 500) * bounds.height / 1000)));
+      const direction = String(args.direction || 'down');
+      const amount = Math.max(1, Math.min(999, Number(args.magnitude) || 300));
+      const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0;
+      const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0;
       wc.sendInputEvent({ type: 'mouseMove', x, y });
-      wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: Number(args.deltaX)||0, deltaY: Math.max(-3000, Math.min(3000, Number(args.deltaY)||600)) });
-      return { scrolled: true };
+      wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY });
+      return { scrolled: true, direction, amount };
     }
     case 'keypress': {
-      const key = String(args.key||'').toLowerCase();
-      if (!['enter','tab','escape','arrowdown','arrowup','pagedown','pageup','home','end'].includes(key)) throw new Error('Key is not allowed.');
-      const keyMap = {enter:'Return',tab:'Tab',escape:'Escape',arrowdown:'Down',arrowup:'Up',pagedown:'PageDown',pageup:'PageUp',home:'Home',end:'End'};
+      const key = String(args.key||'').toLowerCase().replace(/[^a-z]/g, '');
+      if (!['enter','tab','escape','arrowdown','arrowup','arrowleft','arrowright','pagedown','pageup','home','end','backspace'].includes(key)) throw new Error('Key is not allowed.');
+      const keyMap = {enter:'Return',tab:'Tab',escape:'Escape',arrowdown:'Down',arrowup:'Up',arrowleft:'Left',arrowright:'Right',pagedown:'PageDown',pageup:'PageUp',home:'Home',end:'End',backspace:'Backspace'};
       wc.sendInputEvent({type:'keyDown',keyCode:keyMap[key]}); wc.sendInputEvent({type:'keyUp',keyCode:keyMap[key]});
       return { pressed: key };
     }
@@ -139,6 +149,16 @@ async function executeBrowserAction(action, args = {}) {
       const value = String(args.text||'').slice(0,2000);
       wc.insertText(value);
       return { typedCharacters: value.length };
+    }
+    case 'hotkey': {
+      const keys = Array.isArray(args.keys) ? args.keys.map((v) => String(v).toLowerCase()) : [];
+      const combo = keys.join('+').replace(/\s/g, '');
+      const allowed = new Set(['control+a','ctrl+a','control+f','ctrl+f','control+l','ctrl+l']);
+      if (!allowed.has(combo)) throw new Error('Keyboard shortcut is not allowed.');
+      const mainKey = keys[keys.length - 1] === 'a' ? 'A' : keys[keys.length - 1] === 'f' ? 'F' : 'L';
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Control' }); wc.sendInputEvent({ type: 'keyDown', keyCode: mainKey });
+      wc.sendInputEvent({ type: 'keyUp', keyCode: mainKey }); wc.sendInputEvent({ type: 'keyUp', keyCode: 'Control' });
+      return { pressed: combo };
     }
     case 'back': await wc.goBack(); return { url: wc.getURL() };
     case 'forward': await wc.goForward(); return { url: wc.getURL() };
