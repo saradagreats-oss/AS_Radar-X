@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { runComputerUseResearch } from './agent/computerUseResearch.js';
 import { runGeminiStrategicAnalyst, buildReportWarningText } from './gemini/analyst.js';
 import { browserBridge } from './agent/browserBridge.js';
+import { normalizeResearchPages } from './normalization/researchKnowledge.js';
 import { storage } from './storage/database.js';
 import type {
   CollectorStatus,
@@ -105,6 +106,26 @@ class ResearchCoordinator {
     return { pages, sources };
   }
 
+  private buildMemoryContext(pastHistory: Array<{ title: string; concept: string }>, rejectedItems: string[], knowledge: Array<Record<string, any>>, portfolioSnapshot: any): string {
+    const opportunities = pastHistory.slice(0, 120).map((item, index) => String(index + 1) + '. ' + item.title + ' | ' + (item.concept || '')).join('\n');
+    const priorPages = knowledge.slice(0, 80).map((item: any) => {
+      const keywords = Array.isArray(item.keywords) ? item.keywords.slice(0, 16).join(', ') : '';
+      return '- ' + item.title + ' | ' + item.sourceFamily + ' | category=' + item.category + ' | seen=' + (item.seenCount || 1) + ' | terms=' + keywords + ' | url=' + item.canonicalUrl;
+    }).join('\n');
+    return [
+      'PREVIOUS OPPORTUNITIES (avoid exact and near repeats; not current market evidence):',
+      opportunities || 'None recorded.',
+      '',
+      'USER REJECTIONS (strict negative constraints):',
+      rejectedItems.map(item => '- ' + item).join('\n') || 'None supplied.',
+      '',
+      'PREVIOUSLY NORMALIZED RESEARCH KNOWLEDGE (deduplication and discovery memory only; not proof of current demand):',
+      priorPages || 'No normalized pages recorded yet.',
+      '',
+      'PREVIOUS ADOBE PORTFOLIO SNAPSHOT (duplicate/status reference only; re-check the live portfolio):',
+      JSON.stringify(portfolioSnapshot?.summary || null)
+    ].join('\n');
+  }
   private buildResearchMemo(agentMemo: string, pages: any[], sources: SourceEvidenceRecord[]): string {
     const observations = pages.slice(0, 45).map((event: any, index: number) => {
       const detail = event.details || {};
@@ -141,6 +162,8 @@ class ResearchCoordinator {
       'Discover the strongest evidence-backed, durable commercial stock photo and video opportunities across all relevant industries. Choose the research direction autonomously from current evidence and portfolio gaps.';
 
     const previousPortfolio = storage.getLatestPortfolioSnapshot();
+    const priorKnowledge = storage.getRecentNormalizedResearchEvidence(100);
+    const memoryContext = this.buildMemoryContext(pastHistory, rejectedItems, priorKnowledge, previousPortfolio);
     let agentResult: any = null;
     let evidenceSources: SourceEvidenceRecord[] = [];
     let portfolioSummary: PortfolioSummary | null = null;
@@ -160,6 +183,7 @@ class ResearchCoordinator {
         videoCount,
         model: 'gemini-3.8-flash',
         maxTurns: 55,
+        memoryContext,
         onProgress: (stage, progress, message) => {
           this.updateStage(jobId, stage as ResearchStage, progress, message);
         },
@@ -212,6 +236,14 @@ class ResearchCoordinator {
       this.updateStage(jobId, 'NORMALIZING', 84, 'Deduplicating captured pages and normalizing source evidence.');
       const built = this.buildSourceEvidence(jobId);
       evidenceSources = built.sources;
+      const normalizedRecords = normalizeResearchPages(built.pages, jobId);
+      storage.saveNormalizedResearchEvidence(jobId, normalizedRecords);
+      storage.appendResearchEvent({
+        id: crypto.randomUUID(), jobId, at: new Date().toISOString(),
+        type: 'normalized_evidence_saved',
+        message: 'Browser observations were normalized, fingerprinted and stored for future deduplication.',
+        details: { rawPages: built.pages.length, normalizedRecords: normalizedRecords.length, priorKnowledgeRecords: priorKnowledge.length, totalStoredObservationVersions: storage.getNormalizedEvidenceObservationCount(jobId) }
+      });
       if (evidenceSources.length < 3) {
         warnings.push(`Only ${evidenceSources.length} unique source pages were captured. Treat confidence conservatively; the final analyst will not invent missing market evidence.`);
       }
@@ -226,7 +258,7 @@ class ResearchCoordinator {
         supply_or_differentiation_signal: '',
         inference: ''
       }));
-      const researchMemo = this.buildResearchMemo(agentResult?.finalText || '', built.pages, evidenceSources);
+      const researchMemo = this.buildResearchMemo(agentResult?.finalText || '', built.pages, evidenceSources) + '\n\nHISTORICAL DEDUPLICATION MEMORY (not current evidence):\n' + memoryContext.slice(0, 18000);
       webResearch = {
         summary: agentResult?.finalText || 'Computer-use research finished without a narrative memo. The captured source observations remain available.',
         findings: observations.slice(0, 40),
@@ -314,9 +346,9 @@ class ResearchCoordinator {
         },
         evidence_sources: evidenceSources,
         analysis_stats: {
-          raw_evidence_count: evidenceSources.length,
-          deduplicated_evidence_count: evidenceSources.length,
-          cluster_count: evidenceSources.length,
+          raw_evidence_count: built.pages.length,
+          deduplicated_evidence_count: normalizedRecords.length,
+          cluster_count: normalizedRecords.length,
           evidence_backed_candidate_count: photos.length + videos.length,
           rejected_candidate_count: Math.max(0, photoCount + videoCount - photos.length - videos.length)
         },
