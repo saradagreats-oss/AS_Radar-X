@@ -39,7 +39,12 @@ function safeHttpUrl(value) {
 
 function attachResearchBrowser() {
   if (!researchSession) {
-    researchSession = session.fromPartition('persist:as-radar-public-research-v2');
+    // In-memory partition: do not reuse pre-existing cookies or persist public browsing cookies on disk.
+    researchSession = session.fromPartition('as-radar-public-research-v2');
+    researchSession.webRequest.onBeforeRequest(
+      { urls: ['*://contributor.stock.adobe.com/*', '*://*.contributor.stock.adobe.com/*'] },
+      (_details, callback) => callback({ cancel: true })
+    );
     void applyChromiumProxy(desktopProxyConfig).catch((error) => console.error('[AS-Radar-X research proxy]', error));
   }
   if (!mainWindow || mainWindow.isDestroyed() || researchBrowser) return;
@@ -63,6 +68,9 @@ function attachResearchBrowser() {
   });
   researchBrowser.webContents.on('will-navigate', (event, url) => {
     if (!safeHttpUrl(url)) event.preventDefault();
+  });
+  researchBrowser.webContents.on('will-redirect', (event, navigationDetails) => {
+    if (!safeHttpUrl(navigationDetails.url)) event.preventDefault();
   });
   const notify = () => sendBrowserEvent({ type: 'navigation', url: researchBrowser.webContents.getURL(), title: researchBrowser.webContents.getTitle(), loading: researchBrowser.webContents.isLoading() });
   researchBrowser.webContents.on('did-navigate', notify);
