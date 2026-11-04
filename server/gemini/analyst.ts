@@ -361,8 +361,9 @@ CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
    - Compare against past history: Do NOT duplicate or repeat previous concepts or titles.
    - NEVER hardcode titles or ideas; synthesize fresh, evidence-backed content.
 
-6. NO SECONDARY DETAIL BLOCKS:
-   - Do NOT generate fields like 'why_selected', 'visual_angle', 'supply_gap', 'longevity', 'commercial_use', 'production_spec', or 'differentiation_strategy'. Focus purely on the high-quality SEO title, top-tier prompt, and 25 tags.
+6. REQUIRED TRANSPARENCY FIELDS:
+   - Include the concept, why it matters, buyer use case, visual gap, longevity, risk flags and evidence references requested by the JSON schema.
+   - Every score component must cite one or more valid evidence IDs from the supplied source list. Use 0 when the evidence is absent.
 
 ${pdfContextText}
 
@@ -571,11 +572,25 @@ Return strictly valid JSON matching the schema.`;
           const tags = normalizeTags(rawP.tags, cleanTitle, rawP.prompt, input.tagCount || 25);
           const score = calculateOpportunityScore(rawP.score_components);
 
+          const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
+          const score = calculateOpportunityScore(rawP.score_components, validIds);
+          const sourceIds = Array.isArray(rawP.evidence?.source_ids) ? rawP.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
           processedPhotos.push({
             id: rawP.id || `photo-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
             prompt: rawP.prompt || '',
-            tags
+            tags,
+            concept: rawP.concept || '',
+            why_selected: rawP.why_selected || '',
+            market_evidence: (rawP.evidence?.observed_facts || []).join(' | '),
+            commercial_use: rawP.commercial_use || '',
+            buyer_use_case: rawP.buyer_use_case || '',
+            visual_angle: rawP.visual_angle || '',
+            supply_gap: rawP.supply_gap || '',
+            longevity: rawP.longevity || '',
+            risk_notes: rawP.risk_notes || '',
+            evidence: { ...(rawP.evidence || {}), source_ids: sourceIds },
+            score
           });
 
           if (processedPhotos.length >= input.requestedPhotoCount) break;
@@ -613,13 +628,26 @@ Return strictly valid JSON matching the schema.`;
           }
 
           const tags = normalizeTags(rawV.tags, cleanTitle, rawV.prompt, input.tagCount || 25);
-          const score = calculateOpportunityScore(rawV.score_components);
-
+          const validIds = new Set((input.evidenceSources || input.webResearch?.sources || []).map((source) => Number(source.id)));
+          const score = calculateOpportunityScore(rawV.score_components, validIds);
+          const sourceIds = Array.isArray(rawV.evidence?.source_ids) ? rawV.evidence.source_ids.map((id: any) => Number(id)).filter((id: number) => validIds.has(id)) : [];
           processedVideos.push({
             id: rawV.id || `video-${Date.now()}-${idx + 1}`,
             title: cleanTitle,
             prompt: rawV.prompt || '',
-            tags: tags25
+            tags,
+            concept: rawV.concept || '',
+            why_selected: rawV.why_selected || '',
+            commercial_use: rawV.commercial_use || '',
+            buyer_use_case: rawV.buyer_use_case || '',
+            motion_value: rawV.motion_value || '',
+            motion_action: rawV.motion_action || '',
+            loop_potential: rawV.loop_potential || '',
+            supply_gap: rawV.supply_gap || '',
+            longevity: rawV.longevity || '',
+            risk_notes: rawV.risk_notes || '',
+            evidence: { ...(rawV.evidence || {}), source_ids: sourceIds },
+            score
           });
 
           if (processedVideos.length >= input.requestedVideoCount) break;
