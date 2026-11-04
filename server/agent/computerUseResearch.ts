@@ -348,7 +348,7 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   let model = modelCandidates[0];
   const maxTurns = Math.max(12, Math.min(80, input.maxTurns || 55));
   const skippedDomains = new Map<string, string>();
-  let capture: BrowserCapture | null = null;
+  let startupCapture: BrowserCapture | null = null;
   let firstShot: string | undefined;
   const startupFailures: string[] = [];
 
@@ -378,11 +378,16 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       continue;
     }
 
+  const initialCapture = startupCapture;
+  if (!initialCapture) throw new Error('No public start page was captured.');
+  let capture: BrowserCapture = initialCapture;
+  let screenshots = firstShot ? 1 : 0;
+
     const outcome = await capturePublicPageWithRetries(input.jobId, 'startup', startUrl, unavailableCapture(startUrl, 'Initial page capture has not succeeded yet.'), input.onProgress);
     if (outcome.ok) {
-      capture = outcome.capture;
-      firstShot = saveScreenshot(input.jobId, capture.screenshotBase64);
-      log(input.jobId, 'page_visited', capture.snapshot.title || capture.snapshot.url, {
+      startupCapture = outcome.capture;
+      firstShot = saveScreenshot(input.jobId, startupCapture.screenshotBase64);
+      log(input.jobId, 'page_visited', startupCapture.snapshot.title || capture.snapshot.url, {
         url: capture.snapshot.url,
         screenshot: firstShot,
         initialCapture: true,
@@ -404,7 +409,7 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     startupFailures.push(`${host}: ${outcome.reason || 'Page capture failed.'}`);
   }
 
-  if (!capture) {
+  if (!startupCapture) {
     throw new Error(`The embedded browser could not read any starting public marketplace after ${SITE_CAPTURE_MAX_ATTEMPTS} attempts per site. ${startupFailures.slice(-6).join(' | ') || 'Check the internet connection and restart the app.'}`);
   }
 
