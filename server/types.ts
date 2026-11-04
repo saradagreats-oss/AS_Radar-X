@@ -131,11 +131,11 @@ export interface ProductionSpec {
   loop_strategy?: string;
 }
 
-export interface PhotoOpportunity {
+export interface ScoreComponent {\n  score: number;\n  reason: string;\n  evidence_ids: number[];\n}\n\nexport interface OpportunityScore {\n  score: number;\n  confidence: 'HIGH' | 'MEDIUM' | 'LOW';\n  breakdown: {\n    recurring_demand: ScoreComponent;\n    commercial_use: ScoreComponent;\n    marketplace_evidence: ScoreComponent;\n    supply_gap: ScoreComponent;\n    longevity: ScoreComponent;\n    production_feasibility: ScoreComponent;\n  };\n  formula: string;\n}\n\nexport interface SourceEvidenceRecord {\n  id: number;\n  title: string;\n  url: string;\n  source_family?: string;\n  observation?: string;\n}\n\nexport interface PortfolioSummary {\n  rowCount: number;\n  accepted?: number | null;\n  rejected?: number | null;\n  pending?: number | null;\n  totalDownloads?: number | null;\n  changedAssets?: number;\n  sourceUrl?: string;\n  capturedAt?: string;\n}\n\nexport interface PhotoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and visual context
   prompt: string; // Top-level detailed prompt with texture, lighting, camera framing, visual style
-  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  tags: string[]; // User-selected count; first 10 are the highest-impact relevant tags
   description?: string;
   concept?: string;
   why_selected?: string;
@@ -156,7 +156,7 @@ export interface VideoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and cinematic movement context
   prompt: string; // Top-level detailed motion prompt with texture, camera motion, frame rate, lighting
-  tags: string[]; // Exactly 25 keywords (first 10 are primary high-impact SEO tags)
+  tags: string[]; // User-selected count; first 10 are the highest-impact relevant tags
   description?: string;
   concept?: string;
   why_selected?: string;
@@ -199,7 +199,7 @@ export interface ResearchReport {
   photos: PhotoOpportunity[];
   videos: VideoOpportunity[];
   warnings?: string[];
-  internal_score_explanation?: string;
+  internal_score_explanation?: string;\n  score_summary?: { average: number; highest: number; scored: number; formula: string };\n  portfolio_summary?: PortfolioSummary | null;\n  browser_research?: { pages: number; actions: number; screenshots: number; model: string; turn_limit_reached?: boolean };\n  evidence_sources?: SourceEvidenceRecord[];
   analysis_stats?: {
     raw_evidence_count: number;
     deduplicated_evidence_count: number;
@@ -222,7 +222,7 @@ export interface HistoryRecord {
 }
 
 export type ResearchStage =
-  | 'INITIALIZING'
+  | 'INITIALIZING'\n  | 'PLANNING'\n  | 'BROWSER_RESEARCH'\n  | 'PAUSED_FOR_USER'\n  | 'FINAL_ANALYSIS'\n  | 'PORTFOLIO_SYNC'
   | 'COLLECTING'
   | 'NORMALIZING'
   | 'DEDUPLICATING'
