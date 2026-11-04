@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { storage } from '../storage/database.js';
-import { listAvailableGeminiModels } from './models.js';
+import { getComputerUseModelCandidates, listAvailableGeminiModels } from './models.js';
 import type {
   ClusterAnalysis,
   ConceptCluster,
@@ -36,6 +36,7 @@ interface AnalystInput {
   evidenceSources?: SourceEvidenceRecord[];
   portfolioSummary?: Record<string, any> | null;
   model?: string;
+  allowModelFallback?: boolean;
 }
 
 interface GeminiModelOutput {
@@ -62,24 +63,25 @@ function getClient() {
   return new GoogleGenAI({ apiKey });
 }
 
-async function candidateModels(selectedModel?: string): Promise<string[]> {
-  const custom = String(selectedModel || storage.getCustomModel() || '').trim();
-  const cleanCustom = custom && custom.toLowerCase() !== 'auto' ? custom.replace(/^models\//, '') : undefined;
-  if (cleanCustom) return [cleanCustom];
+async function candidateModels(selectedModel?: string, allowModelFallback = false): Promise<string[]> {
+  const selected = String(selectedModel || storage.getCustomModel() || '').trim().replace(/^models\\//, '');
+  const isAuto = !selected || selected.toLowerCase() === 'auto';
 
-  const preferred = process.env.GEMINI_MODEL?.trim();
-  const lastSuccessful = storage.getLastSuccessfulModel()?.trim();
-  const cleanPreferred = preferred && preferred.toLowerCase() !== 'auto' ? preferred.replace(/^models\//, '') : undefined;
+  if (!isAuto && !allowModelFallback) return [selected];
+
   let available: string[] = [];
   try {
     available = await listAvailableGeminiModels(storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '');
   } catch {
-    // Auto remains usable with the stable documented fallback order.
+    // Auto remains usable with the stable Computer Use-compatible fallback order.
   }
-  const fallback = available.length
-    ? available.slice(0, 12)
-    : ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash'];
-  return [...new Set([cleanPreferred, lastSuccessful, ...fallback].filter((model): model is string => !!model))];
+
+  const fallback = getComputerUseModelCandidates('auto', storage.getLastSuccessfulModel(), available);
+  if (!isAuto && allowModelFallback) {
+    return [...new Set([selected, ...fallback])];
+  }
+  return fallback;
+
 }
 
 /** Keep only relevant, distinct tags; never pad with unrelated generic stock terms. */
@@ -329,7 +331,7 @@ Return strictly valid JSON matching the schema.`;
 
   let lastError: any = null;
 
-  for (const model of await candidateModels(input.model)) {
+  for (const model of await candidateModels(input.model, input.allowModelFallback)) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const response = await ai.models.generateContent({
