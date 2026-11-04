@@ -110,6 +110,10 @@ async function runTests() {
   assert(researcherSource.includes('runGeminiStrategicAnalyst'), 'browser observations flow into final analysis');
   assert(researcherSource.includes('model: storage.getCustomModel()'), 'coordinator passes the saved user model to browser research');
   assert(researcherSource.includes('allowModelFallback:'), 'coordinator preserves whether Auto mode was selected');
+  const serverSource = fs.readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
+  const appSource = fs.readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8');
+  assert(serverSource.includes('model: requestedModel'), 'research API forwards the validated model to the coordinator');
+  assert(appSource.includes('model: selectedModelInput'), 'Research Start sends the currently selected UI model');
   assert(researcherSource.includes('getResearchEvents'), 'research history is reused as durable evidence');
   assert(agentSource.includes('resumeComputerUse') && agentSource.includes('human_handoff'), 'verification pauses can be resumed by the user');
   assert(agentSource.includes('getComputerUseModelCandidates') && !agentSource.includes("input.model || 'gemini-3.8-flash'"), 'browser agent resolves the selected model instead of a hardcoded 3.8 fallback');
