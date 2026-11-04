@@ -146,6 +146,12 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       const intent = String(args.intent || `Gemini requested ${call.name}`);
       log(input.jobId, 'agent_intent', intent, { action: call.name, safetyDecision: actionSafety(call) }, capture.snapshot.url);
       const safety = actionSafety(call);
+      const prohibitedIntent = /(purchase|buy now|checkout|subscribe|upload|delete|remove account|post a comment|send a message|publish|place an order|confirm payment|change account settings|grant access|authorize an app)/i;
+      if (prohibitedIntent.test(intent)) {
+        results.push({ blocked: true, reason: 'Account, purchase, publishing or destructive actions are outside the research permission.' });
+        log(input.jobId, 'action_blocked', 'A non-research action was blocked by local policy.', { action: call.name, intent }, capture.snapshot.url);
+        continue;
+      }
       if (safety.includes('blocked')) throw new Error(`Gemini safety system blocked browser action: ${call.name}.`);
       if (safety.includes('require_confirmation')) {
         await browserBridge.setTakeover(true);
