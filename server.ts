@@ -56,7 +56,6 @@ app.post('/api/research', (req: Request, res: Response) => {
     }
 
     const niche = typeof req.body?.niche === 'string' ? req.body.niche.trim().slice(0, 3000) : '';
-    const titleInstructions = typeof req.body?.title_instructions === 'string' ? req.body.title_instructions.trim().slice(0, 1200) : '';
     const requestedModel = normalizeGeminiModelId(String(req.body?.model ?? storage.getCustomModel() ?? 'auto'));
     if (requestedModel.toLowerCase() !== 'auto' && !isComputerUseModelSupported(requestedModel)) {
       res.status(400).json({ error: `"${requestedModel}" is not supported for this app's Computer Use research pipeline. Refresh the model list in Settings and choose a compatible model.` });
@@ -67,7 +66,7 @@ app.post('/api/research', (req: Request, res: Response) => {
       res.status(400).json({ error: 'Tag count must be between 1 and 50.' });
       return;
     }
-    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount, model: requestedModel });
+    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, tagCount, model: requestedModel });
     res.json({ job_id: jobId, status: 'RUNNING', photo_count: photoCount, video_count: videoCount, tag_count: tagCount });
   } catch (err: any) {
     console.error('Error starting research:', err);
@@ -129,12 +128,6 @@ app.get('/api/research/screenshots/:jobId/:file', (req: Request, res: Response) 
   res.type('jpg').sendFile(target);
 });
 
-app.get('/api/portfolio/assets', (_req: Request, res: Response) => {
-  const assets = storage.getPortfolioAssets();
-  const latestSnapshot = storage.getLatestPortfolioSnapshot();
-  res.json({ assets, count: assets.length, snapshot: latestSnapshot ? { ...latestSnapshot.summary, capturedAt: latestSnapshot.capturedAt, sourceUrl: latestSnapshot.sourceUrl } : null });
-});
-
 // 3. Get Report
 app.get('/api/report/:jobId', (req: Request, res: Response) => {
   const { jobId } = req.params;
@@ -170,23 +163,6 @@ app.post('/api/history/clear', (_req: Request, res: Response) => {
   }
 });
 
-// 5. Instructions
-app.get('/api/instruction', (_req: Request, res: Response) => {
-  const instructions = storage.getInstructions();
-  res.json({ instructions });
-});
-
-app.put('/api/instruction', (req: Request, res: Response) => {
-  const text = typeof req.body.instructions === 'string' ? req.body.instructions : '';
-  storage.saveInstructions(text);
-  res.json({ success: true, instructions: text.slice(0, 500) });
-});
-
-app.delete('/api/instruction', (_req: Request, res: Response) => {
-  storage.clearInstructions();
-  res.json({ success: true, instructions: '' });
-});
-
 // 6. Rejected Content (Adobe Not Accepted Content)
 app.get('/api/rejected-content', (_req: Request, res: Response) => {
   const items = storage.getRejectedContent();
@@ -207,53 +183,6 @@ app.delete('/api/rejected-content/:index', (req: Request, res: Response) => {
   }
   storage.deleteRejectedContent(index);
   res.json({ success: true, items: storage.getRejectedContent() });
-});
-
-// 6.1 PDF Document & Directives
-app.get('/api/pdf-instruction', (_req: Request, res: Response) => {
-  const doc = storage.getPdfDocument();
-  res.json({
-    hasPdf: !!doc && !!doc.base64Data,
-    fileName: doc?.fileName || '',
-    fileSize: doc?.fileSize || 0,
-    instructions: doc?.instructions || '',
-    uploadedAt: doc?.uploadedAt || ''
-  });
-});
-
-app.post('/api/pdf-instruction', (req: Request, res: Response) => {
-  try {
-    const { fileName, fileSize, mimeType, base64Data, instructions } = req.body || {};
-    if (!base64Data || typeof base64Data !== 'string') {
-      res.status(400).json({ success: false, error: 'Valid PDF document data is required.' });
-      return;
-    }
-    const cleanBase64 = base64Data.replace(/^data:application\/pdf;base64,/i, '').trim();
-    storage.savePdfDocument({
-      fileName: (fileName || 'document.pdf').trim(),
-      fileSize: Number(fileSize) || 0,
-      mimeType: mimeType || 'application/pdf',
-      base64Data: cleanBase64,
-      instructions: typeof instructions === 'string' ? instructions.slice(0, 3000) : '',
-      uploadedAt: new Date().toISOString()
-    });
-    const saved = storage.getPdfDocument();
-    res.json({
-      success: true,
-      hasPdf: true,
-      fileName: saved?.fileName,
-      fileSize: saved?.fileSize,
-      instructions: saved?.instructions,
-      uploadedAt: saved?.uploadedAt
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || 'Failed saving PDF document' });
-  }
-});
-
-app.delete('/api/pdf-instruction', (_req: Request, res: Response) => {
-  storage.clearPdfDocument();
-  res.json({ success: true, hasPdf: false, instructions: '' });
 });
 
 // 7. Raw Evidence for Research Job
