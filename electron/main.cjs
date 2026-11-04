@@ -13,7 +13,7 @@ let desktopProxyAuth = null;
 let researchBrowser = null;
 let browserVisible = false;
 let browserTakeover = false;
-const researchSession = session.fromPartition('persist:as-radar-research');
+let researchSession = null;
 
 function sendBrowserEvent(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('as-radar:browser-event', payload);
@@ -27,6 +27,7 @@ function safeHttpUrl(value) {
 }
 
 function attachResearchBrowser() {
+  if (!researchSession) researchSession = session.fromPartition('persist:as-radar-research');
   if (!mainWindow || mainWindow.isDestroyed() || researchBrowser) return;
   researchBrowser = new WebContentsView({
     webPreferences: {
@@ -100,15 +101,17 @@ async function executeBrowserAction(action, args = {}) {
       return { url: wc.getURL(), title: wc.getTitle() };
     }
     case 'click': {
-      const x = Math.max(0, Math.min(10000, Number(args.x)||0));
-      const y = Math.max(0, Math.min(10000, Number(args.y)||0));
+      const size = wc.getSize();
+      const x = Math.max(0, Math.min(size[0] - 1, Math.round((Number(args.x)||0) * size[0] / 1000)));
+      const y = Math.max(0, Math.min(size[1] - 1, Math.round((Number(args.y)||0) * size[1] / 1000)));
       wc.sendInputEvent({ type: 'mouseMove', x, y });
       wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
       wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
       return { clicked: true, x, y };
     }
     case 'scroll': {
-      const x = Math.max(0, Number(args.x)||400), y = Math.max(0, Number(args.y)||500);
+      const size = wc.getSize();
+      const x = Math.max(0, Math.min(size[0] - 1, Math.round((Number(args.x)||500) * size[0] / 1000))), y = Math.max(0, Math.min(size[1] - 1, Math.round((Number(args.y)||500) * size[1] / 1000)));
       wc.sendInputEvent({ type: 'mouseMove', x, y });
       wc.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: Number(args.deltaX)||0, deltaY: Math.max(-3000, Math.min(3000, Number(args.deltaY)||600)) });
       return { scrolled: true };
@@ -272,6 +275,9 @@ async function startBackend() {
       }
     });
 
+    backendProcess.on('message', (message) => {
+      if (message && message.type === 'as-radar-browser-request') void handleBrowserRequest(message);
+    });
     let settled = false;
     let output = '';
     let proxyApplyPromise = Promise.resolve();
@@ -378,7 +384,6 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  if (process.send) process.on('message', (message) => { if (message && message.type === 'as-radar-browser-request') void handleBrowserRequest(message); });
   ipcMain.on('as-radar:browser-bounds', (_event, bounds) => updateResearchBrowserBounds(null, bounds));
   ipcMain.handle('as-radar:browser-show', async (_event, url) => { attachResearchBrowser(); browserVisible = true; researchBrowser.setVisible(true); updateResearchBrowserBounds(); const safe = safeHttpUrl(url); if (safe && safe !== researchBrowser.webContents.getURL()) await researchBrowser.webContents.loadURL(safe); return { visible: true, url: researchBrowser.webContents.getURL() }; });
   ipcMain.handle('as-radar:browser-hide', () => { browserVisible = false; if (researchBrowser) researchBrowser.setVisible(false); return { visible: false }; });
