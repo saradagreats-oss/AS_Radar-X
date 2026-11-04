@@ -28,12 +28,12 @@ function clampScore(value: unknown): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0;
 }
 
-function cleanComponent(value: any): ScoreComponent {
+function cleanComponent(value: any, validEvidenceIds?: Set<number>): ScoreComponent {
   return {
     score: clampScore(value?.score),
     reason: String(value?.reason || DEFAULT_COMPONENT.reason).slice(0, 700),
     evidence_ids: Array.isArray(value?.evidence_ids)
-      ? [...new Set(value.evidence_ids.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0))]
+      ? [...new Set(value.evidence_ids.map((id: unknown) => Number(id)).filter((id: number) => Number.isInteger(id) && id > 0 && (!validEvidenceIds || validEvidenceIds.has(id))))]
       : []
   };
 }
@@ -42,15 +42,23 @@ function cleanComponent(value: any): ScoreComponent {
  * Calculates a reproducible prioritization score from six evidence-anchored
  * component assessments. The output is not a forecast or probability of sales.
  */
-export function calculateOpportunityScore(raw: any): OpportunityScore {
+export function calculateOpportunityScore(raw: any, validEvidenceIds?: Set<number>): OpportunityScore {
   const breakdown = {
-    recurring_demand: cleanComponent(raw?.recurring_demand),
-    commercial_use: cleanComponent(raw?.commercial_use),
-    marketplace_evidence: cleanComponent(raw?.marketplace_evidence),
-    supply_gap: cleanComponent(raw?.supply_gap),
-    longevity: cleanComponent(raw?.longevity),
-    production_feasibility: cleanComponent(raw?.production_feasibility)
+    recurring_demand: cleanComponent(raw?.recurring_demand, validEvidenceIds),
+    commercial_use: cleanComponent(raw?.commercial_use, validEvidenceIds),
+    marketplace_evidence: cleanComponent(raw?.marketplace_evidence, validEvidenceIds),
+    supply_gap: cleanComponent(raw?.supply_gap, validEvidenceIds),
+    longevity: cleanComponent(raw?.longevity, validEvidenceIds),
+    production_feasibility: cleanComponent(raw?.production_feasibility, validEvidenceIds)
   };
+  if (validEvidenceIds) {
+    for (const component of Object.values(breakdown)) {
+      if (!component.evidence_ids.length) {
+        component.score = 0;
+        component.reason = 'No valid source reference was attached; component not credited.';
+      }
+    }
+  }
   const score = Math.round(
     Object.entries(SCORE_WEIGHTS).reduce((sum, [key, weight]) => {
       const component = breakdown[key as ScoreComponentKey];
