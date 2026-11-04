@@ -254,7 +254,6 @@ class ResearchCoordinator {
         rejectedContentList: rejectedItems,
         pastOpportunitiesHistory: pastHistory,
         webResearch,
-        isPlatformDataEnabled: false,
         pdfDoc,
         tagCount,
         titleInstructions,
