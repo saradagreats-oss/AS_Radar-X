@@ -112,7 +112,7 @@ export default function App() {
     hasEnvKey: false,
     hasKey: false,
     activeKeyMasked: 'CHECKING...',
-    activeModel: 'gemini-3.8-flash',
+    activeModel: 'gemini-3.7-flash',
     availableModels: ['auto']
   });
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState<string>('');
@@ -1778,7 +1778,7 @@ export default function App() {
               <div className="space-y-3 font-mono text-xs">
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold">Select Gemini Model</label>
+                    <label className="block text-[0.68rem] text-[var(--text-dim)] uppercase font-bold">Select Gemini Research Model</label>
                     <button type="button" onClick={handleRefreshGeminiModels} disabled={isRefreshingGeminiModels} className="py-1 px-2 rounded border border-[var(--border-color)] text-[var(--text-dim)] hover:text-[var(--accent-cyan)] disabled:opacity-50">
                       <i className={`fa-solid ${isRefreshingGeminiModels ? 'fa-spinner fa-spin' : 'fa-rotate'} mr-1`}></i>
                       {isRefreshingGeminiModels ? 'Refreshing...' : 'REFRESH MODELS'}
@@ -1789,7 +1789,7 @@ export default function App() {
                       <option key={model} value={model}>{model === 'auto' ? (lastSuccessfulGeminiModel ? `Auto (last successful: ${lastSuccessfulGeminiModel})` : 'Auto (try available models until one works)') : model}</option>
                     ))}
                   </select>
-                  <p className="mt-1 text-[0.65rem] text-[var(--text-dim)]">Refresh fetches models available for the current API key. Auto tries models until one works and prioritizes the last successful model in future research.</p>
+                  <p className="mt-1 text-[0.65rem] text-[var(--text-dim)]">Refresh lists models compatible with both browser Computer Use and the final analyst. Your selected model is used for both stages; Auto tries compatible models when a temporary model outage occurs.</p>
                 </div>
 
                 <div>
