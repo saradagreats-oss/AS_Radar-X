@@ -181,7 +181,7 @@ class ResearchCoordinator {
         instructions: userInstructions + (pdfDoc?.instructions ? `\nPDF REFERENCE DIRECTIVES: ${pdfDoc.instructions}` : ''),
         photoCount,
         videoCount,
-        model: 'gemini-3.8-flash',
+        model: storage.getCustomModel() || process.env.GEMINI_MODEL || 'auto',
         maxTurns: 55,
         memoryContext,
         onProgress: (stage, progress, message) => {
@@ -291,7 +291,8 @@ class ResearchCoordinator {
         titleInstructions,
         researchMemo,
         evidenceSources,
-        portfolioSummary
+        portfolioSummary,
+        model: agentResult?.model || storage.getCustomModel()
       });
 
       const photos = analystOutput.photos || [];
