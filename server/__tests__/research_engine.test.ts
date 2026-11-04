@@ -10,6 +10,7 @@ import { calculateOpportunityScore } from '../analysis/evidenceScore.js';
 import { clusterEvidence } from '../normalization/clustering.js';
 import { calculateJaccardSimilarity, deduplicateEvidence } from '../normalization/dedupe.js';
 import { cleanText, extractTokens, normalizeEvidence } from '../normalization/textNormalizer.js';
+import { normalizeResearchPages } from '../normalization/researchKnowledge.js';
 import { storage } from '../storage/database.js';
 import type { RawEvidence } from '../types.js';
 
@@ -116,6 +117,29 @@ async function runTests() {
   });
   const storedEvents = storage.getResearchEvents(eventJob);
   assert(storedEvents.length === 1 && storedEvents[0].details.count === 3, 'research audit events persist in SQLite');
+
+  const memoryJob = 'test_knowledge_' + Date.now();
+  const pageEvents = [{
+    id: 'page_' + memoryJob,
+    at: new Date().toISOString(),
+    type: 'page_visited',
+    message: 'Industrial heat pump maintenance workflow',
+    url: 'https://example.com/industry/heat-pump-maintenance?utm_source=test',
+    details: {
+      text: 'Commercial maintenance workflow for industrial heat pumps, technician inspection, refrigerant checks and energy efficiency servicing.',
+      headings: ['Industrial heat pumps', 'Preventive maintenance', 'Service workflow']
+    }
+  }];
+  const normalizedPages = normalizeResearchPages(pageEvents, memoryJob);
+  assert(normalizedPages.length === 1 && normalizedPages[0].keywords.length > 0, 'research pages are normalized and keyword-indexed');
+  storage.saveNormalizedResearchEvidence(memoryJob, normalizedPages);
+  const knowledge = storage.getRecentNormalizedResearchEvidence(100).find((item: any) => item.fingerprint === normalizedPages[0].fingerprint);
+  assert(!!knowledge && knowledge.category.length > 0, 'normalized research knowledge persists in SQLite');
+  assert(storage.getNormalizedEvidenceObservationCount(memoryJob) === 1, 'immutable page observation versions are stored per run');
+  const secondMemoryJob = memoryJob + '_second';
+  storage.saveNormalizedResearchEvidence(secondMemoryJob, normalizedPages.map(item => ({ ...item, jobId: secondMemoryJob })));
+  const revisited = storage.getRecentNormalizedResearchEvidence(100).find((item: any) => item.fingerprint === normalizedPages[0].fingerprint);
+  assert(Number(revisited?.seenCount) >= 2, 'repeat research updates recurrence memory without duplicating the normalized record');
 
   const gitignore = fs.readFileSync(new URL('../../.gitignore', import.meta.url), 'utf8');
   assert(gitignore.includes('/data/') && gitignore.includes('*.sqlite'), 'private local runtime data is excluded from Git');
