@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { researchCoordinator } from './server/researcher.js';
 import { storage } from './server/storage/database.js';
 import { applyProxySettings, testProxyConnection } from './server/proxy.js';
-import { listAvailableGeminiModels } from './server/gemini/models.js';
+import { getComputerUseModelCandidates, isComputerUseModelSupported, listAvailableComputerUseModels, listAvailableGeminiModels, normalizeGeminiModelId } from './server/gemini/models.js';
 import { resumeComputerUse } from './server/agent/computerUseResearch.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -57,12 +57,17 @@ app.post('/api/research', (req: Request, res: Response) => {
 
     const niche = typeof req.body?.niche === 'string' ? req.body.niche.trim().slice(0, 3000) : '';
     const titleInstructions = typeof req.body?.title_instructions === 'string' ? req.body.title_instructions.trim().slice(0, 1200) : '';
+    const requestedModel = normalizeGeminiModelId(String(req.body?.model ?? storage.getCustomModel() ?? 'auto'));
+    if (requestedModel.toLowerCase() !== 'auto' && !isComputerUseModelSupported(requestedModel)) {
+      res.status(400).json({ error: `"${requestedModel}" is not supported for this app's Computer Use research pipeline. Refresh the model list in Settings and choose a compatible model.` });
+      return;
+    }
     const tagCount = req.body?.tag_count === undefined ? 25 : Number(req.body.tag_count);
     if (!Number.isInteger(tagCount) || tagCount < 1 || tagCount > 50) {
       res.status(400).json({ error: 'Tag count must be between 1 and 50.' });
       return;
     }
-    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount });
+    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount, model: requestedModel });
     res.json({ job_id: jobId, status: 'RUNNING', photo_count: photoCount, video_count: videoCount, tag_count: tagCount });
   } catch (err: any) {
     console.error('Error starting research:', err);
@@ -332,9 +337,9 @@ app.post('/api/gemini/models', async (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: 'Add a Gemini API key before refreshing the model list.' });
       return;
     }
-    const models = await listAvailableGeminiModels(apiKey);
+    const models = await listAvailableComputerUseModels(apiKey);
     if (!models.length) {
-      res.status(502).json({ success: false, error: 'Google returned no Gemini models supporting generateContent for this API key.' });
+      res.status(502).json({ success: false, error: 'Google returned no models that support both Computer Use research and final content generation for this API key.' });
       return;
     }
     res.json({ success: true, models });
@@ -344,12 +349,20 @@ app.post('/api/gemini/models', async (req: Request, res: Response) => {
 });
 
 app.post('/api/gemini/config', (req: Request, res: Response) => {
-  const { apiKey, model } = req.body;
-  if (apiKey !== undefined) {
-    storage.saveCustomApiKey(apiKey);
+  const { apiKey, model } = req.body || {};
+  const requestedModel = model === undefined ? undefined : normalizeGeminiModelId(String(model));
+  if (requestedModel && requestedModel.toLowerCase() !== 'auto' && !isComputerUseModelSupported(requestedModel)) {
+    res.status(400).json({
+      success: false,
+      error: `"${requestedModel}" is not in the supported Computer Use research model list. Choose Auto or a compatible model from the selector.`
+    });
+    return;
   }
-  if (model !== undefined) {
-    storage.saveCustomModel(model);
+  if (apiKey !== undefined) {
+    storage.saveCustomApiKey(String(apiKey));
+  }
+  if (requestedModel !== undefined) {
+    storage.saveCustomModel(requestedModel);
   }
 
   const customKey = storage.getCustomApiKey();
@@ -377,10 +390,19 @@ app.post('/api/gemini/test', async (req: Request, res: Response) => {
     const ai = new GoogleGenAI({ apiKey });
     let candidates: string[];
     if (rawModel.toLowerCase() === 'auto') {
-      try { candidates = await listAvailableGeminiModels(apiKey); } catch { candidates = []; }
-      candidates = [...new Set([storage.getLastSuccessfulModel(), ...candidates.slice(0, 12), 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-2.0-flash'].filter((model): model is string => !!model))];
+      let available: string[] = [];
+      try { available = await listAvailableGeminiModels(apiKey); } catch { /* documented fallback order below */ }
+      candidates = getComputerUseModelCandidates('auto', storage.getLastSuccessfulModel(), available);
     } else {
-      candidates = [rawModel.replace(/^models\//, '')];
+      const selected = normalizeGeminiModelId(rawModel);
+      if (!isComputerUseModelSupported(selected)) {
+        res.status(400).json({
+          success: false,
+          error: `"${selected}" does not support the complete Computer Use research workflow. Choose Auto or a compatible model.`
+        });
+        return;
+      }
+      candidates = [selected];
     }
     const errors: string[] = [];
     for (const testModel of candidates) {
