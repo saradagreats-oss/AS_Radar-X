@@ -100,6 +100,30 @@ app.post('/api/research/resume/:jobId', (req: Request, res: Response) => {
   res.json({ success: resumed, message: resumed ? 'Research agent resumed.' : 'No pending human handoff for this job.' });
 });
 
+app.get('/api/research/screenshots/:jobId/:file', (req: Request, res: Response) => {
+  if (process.env.AS_RADAR_LOCAL_ONLY === 'true') {
+    const remote = req.ip || req.socket.remoteAddress || '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) {
+      res.status(403).end();
+      return;
+    }
+  }
+  const jobId = String(req.params.jobId || '');
+  const file = String(req.params.file || '');
+  if (!/^job_[A-Za-z0-9_-]{4,80}$/.test(jobId) || !/^[0-9]{10,16}-[a-f0-9]{6}\.jpg$/.test(file)) {
+    res.status(400).json({ error: 'Invalid screenshot reference.' });
+    return;
+  }
+  const screenshotRoot = path.resolve(process.env.AS_RADAR_DATA_DIR || path.resolve(process.cwd(), 'data'), 'research-screenshots');
+  const target = path.resolve(screenshotRoot, jobId, file);
+  if (!target.startsWith(screenshotRoot + path.sep) || !fs.existsSync(target)) {
+    res.status(404).end();
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('jpg').sendFile(target);
+});
+
 app.get('/api/portfolio/assets', (_req: Request, res: Response) => {
   const assets = storage.getPortfolioAssets();
   res.json({ assets, count: assets.length });
