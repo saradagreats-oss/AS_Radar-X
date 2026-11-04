@@ -316,10 +316,10 @@ class StorageManager {
         const changes: string[] = [];
         if (!old) changes.push('NEW_ASSET');
         else {
-          if (String(previous.status || '') !== normalized.status) changes.push('STATUS_CHANGED');
-          if (String(previous.rejectionReason || '') !== normalized.rejectionReason) changes.push('REJECTION_REASON_CHANGED');
-          if (previous.downloads !== normalized.downloads || previous.earnings !== normalized.earnings) changes.push('PERFORMANCE_CHANGED');
-          if (String(previous.title || '') !== normalized.title) changes.push('METADATA_CHANGED');
+          if (String(previous?.status || '') !== normalized.status) changes.push('STATUS_CHANGED');
+          if (String(previous?.rejectionReason || '') !== normalized.rejectionReason) changes.push('REJECTION_REASON_CHANGED');
+          if (previous?.downloads !== normalized.downloads || previous?.earnings !== normalized.earnings) changes.push('PERFORMANCE_CHANGED');
+          if (String(previous?.title || '') !== normalized.title) changes.push('METADATA_CHANGED');
         }
         stmt.run(
           stableKey, normalized.sourceAssetId, normalized.status, normalized.title,
