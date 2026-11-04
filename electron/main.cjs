@@ -148,7 +148,7 @@ async function executeBrowserAction(action, args = {}) {
       return { pressed: key };
     }
     case 'type': {
-      const focused = await wc.executeJavaScript(`(() => { const e=document.activeElement; if(!e || !(e.tagName==='INPUT' || e.tagName==='TEXTAREA' || e.isContentEditable)) return false; if(e.tagName==='INPUT' && e.type==='password') return false; if(e.closest('form')?.querySelector('input[type=password]')) return false; const s=[e.type,e.name,e.id,e.placeholder,e.getAttribute('aria-label'),e.getAttribute('role')].join(' ').toLowerCase(); return e.type==='search' || e.getAttribute('role')==='searchbox' || /search|query|keyword|\bq\b/.test(s); })()`);
+      const focused = await wc.executeJavaScript(`(() => { const e=document.activeElement; if(!e || !(e.tagName==='INPUT' || e.tagName==='TEXTAREA' || e.isContentEditable)) return false; if(e.tagName==='INPUT' && e.type==='password') return false; if(e.closest('form')?.querySelector('input[type=password]')) return false; const s=[e.type,e.name,e.id,e.placeholder,e.getAttribute('aria-label'),e.getAttribute('role')].join(' ').toLowerCase(); return e.type==='search' || e.getAttribute('role')==='searchbox' || /search|query|keyword/.test(s) || e.name === 'q' || e.id === 'q'; })()`);
       if (!focused) throw new Error('Typing is restricted to visible search/query fields. Login, contact, payment and account forms must be handled manually.');
       if (args.clear === true) {
         wc.sendInputEvent({ type: 'keyDown', keyCode: 'Control' });
