@@ -804,7 +804,7 @@ export default function App() {
       const res = await fetch(getApiUrl('/api/research'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount, niche: researchNiche, title_instructions: titleInstructions, tag_count: tagCount })
+        body: JSON.stringify({ photo_count: photoCount, video_count: videoCount, niche: researchNiche, title_instructions: titleInstructions, tag_count: tagCount, model: selectedModelInput })
       });
 
       if (!res.ok) {
