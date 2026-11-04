@@ -298,7 +298,7 @@ class StorageManager {
         const sourceId = String(asset.assetId || asset.id || '').trim();
         const stableKey = sourceId ? 'adobe:' + sourceId : 'adobe:hash:' + crypto.createHash('sha256').update([asset.title, asset.status, asset.thumbnail].join('|')).digest('hex');
         const old = this.db.prepare('SELECT first_seen_at FROM portfolio_assets WHERE asset_key = ?').get(stableKey) as any;
-        stmt.run(stableKey, sourceId || null, String(asset.status || 'UNKNOWN'), String(asset.title || ''), String(asset.rejectionReason || ''), Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : null, Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : null, old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, sourceUrl }));
+        stmt.run(stableKey, sourceId || null, String(asset.status || 'UNKNOWN'), String(asset.title || ''), String(asset.rejectionReason || ''), asset.downloads !== null && asset.downloads !== undefined && Number.isFinite(Number(asset.downloads)) ? Number(asset.downloads) : null, asset.earnings !== null && asset.earnings !== undefined && Number.isFinite(Number(asset.earnings)) ? Number(asset.earnings) : null, old?.first_seen_at || now, now, jobId, JSON.stringify({ ...asset, sourceUrl }));
       }
     } catch (error) { console.error('SQLite upsertPortfolioAssets error:', error); }
   }
@@ -309,6 +309,25 @@ class StorageManager {
       this.db.prepare('INSERT INTO portfolio_snapshots (id, job_id, captured_at, source_url, summary_json) VALUES (?, ?, ?, ?, ?)')
         .run(crypto.randomUUID(), jobId, new Date().toISOString(), sourceUrl, JSON.stringify(summary));
     } catch (error) { console.error('SQLite savePortfolioSnapshot error:', error); }
+  }
+
+  public getLatestPortfolioSnapshot(jobId?: string) {
+    if (!this.db) return null;
+    try {
+      const row = jobId
+        ? this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots WHERE job_id = ? ORDER BY captured_at DESC LIMIT 1').get(jobId) as any
+        : this.db.prepare('SELECT id, job_id, captured_at, source_url, summary_json FROM portfolio_snapshots ORDER BY captured_at DESC LIMIT 1').get() as any;
+      if (!row) return null;
+      return { id: row.id, jobId: row.job_id, capturedAt: row.captured_at, sourceUrl: row.source_url, summary: JSON.parse(row.summary_json || '{}') };
+    } catch (error) { console.error('SQLite getLatestPortfolioSnapshot error:', error); return null; }
+  }
+
+  public getPortfolioAssetsForJob(jobId: string) {
+    if (!this.db) return [];
+    try {
+      const rows = this.db.prepare('SELECT record_json, status, last_seen_at FROM portfolio_assets WHERE last_job_id = ? ORDER BY last_seen_at DESC').all(jobId) as any[];
+      return rows.map(row => ({ ...JSON.parse(row.record_json), status: row.status, lastSeenAt: row.last_seen_at }));
+    } catch (error) { console.error('SQLite getPortfolioAssetsForJob error:', error); return []; }
   }
 
   public getPortfolioAssets() {
