@@ -37,11 +37,18 @@ interface AnalystInput {
   portfolioSummary?: Record<string, any> | null;
 }
 
-interface GeminiAnalystOutput {
+interface GeminiModelOutput {
   evidence_summary: string;
   warnings?: string[];
   photos: Array<Record<string, any>>;
   videos: Array<Record<string, any>>;
+}
+
+interface GeminiAnalystOutput {
+  evidence_summary: string;
+  warnings?: string[];
+  photos: PhotoOpportunity[];
+  videos: VideoOpportunity[];
 }
 
 function getClient() {
@@ -332,7 +339,7 @@ Return strictly valid JSON matching the schema.`;
           }
         });
 
-        const parsed = JSON.parse(response.text || '{}') as GeminiAnalystOutput;
+        const parsed = JSON.parse(response.text || '{}') as GeminiModelOutput;
         storage.saveLastSuccessfulModel(model);
 
         // Process and validate Photos
