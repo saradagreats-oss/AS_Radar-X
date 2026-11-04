@@ -1093,7 +1093,7 @@ export default function App() {
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[0.64rem] text-[var(--text-dim)] font-mono"><span>Stage: {RESEARCH_STAGES.find(stage => stage.id === researchStage)?.label || researchStage}</span><span>{researchEvents.filter(event => event.type === 'page_visited').length} pages · {researchEvents.filter(event => event.type === 'browser_action').length} browser actions</span></div>
               </div>
             )}
-            <ResearchBrowserPanel jobId={activeJobId} events={researchEvents} paused={researchStage === 'PAUSED_FOR_USER'} visible={showBrowser} onContinue={handleContinueResearch} onClose={() => { setShowBrowser(false); window.asRadarDesktop?.hideBrowser().catch(() => undefined); }} />
+            <ResearchBrowserPanel jobId={activeJobId || currentReport?.job_id || null} events={researchEvents} paused={researchStage === 'PAUSED_FOR_USER'} visible={showBrowser} onContinue={handleContinueResearch} onClose={() => { setShowBrowser(false); window.asRadarDesktop?.hideBrowser().catch(() => undefined); }} />
             {/* Report Display */}
             {currentReport && !isResearching && (
               <div className="space-y-6 animate-fade-in">
