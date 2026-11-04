@@ -174,7 +174,7 @@ class StorageManager {
         collected_at TEXT NOT NULL,
         content_hash TEXT NOT NULL,
         observation_json TEXT NOT NULL,
-        UNIQUE(fingerprint, content_hash)
+        UNIQUE(fingerprint, content_hash, job_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_knowledge_observations_job ON research_knowledge_observations(job_id, collected_at);
@@ -366,7 +366,7 @@ class StorageManager {
           String(record.observation || '').slice(0, 12000), collectedAt, collectedAt,
           jobId, contentHash, payload
         );
-        observation.run(crypto.createHash('sha256').update(fingerprint + '|' + contentHash).digest('hex'), fingerprint, jobId, collectedAt, contentHash, payload);
+        observation.run(crypto.createHash('sha256').update(fingerprint + '|' + contentHash + '|' + jobId).digest('hex'), fingerprint, jobId, collectedAt, contentHash, payload);
       }
     } catch (error) {
       console.error('SQLite saveNormalizedResearchEvidence error:', error);
