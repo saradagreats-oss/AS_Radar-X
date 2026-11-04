@@ -8,6 +8,7 @@ export interface BrowserSnapshot {
   links: Array<{ text: string; href: string }>;
   images: Array<{ src: string; alt: string; width: number; height: number }>;
   tables: string[][];
+  portfolioRows?: Array<{ text: string; href: string; title: string; image: string }>;
   passwordFieldCount: number;
   verificationHint: boolean;
   capturedAt: string;
