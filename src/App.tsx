@@ -20,6 +20,7 @@ const RESEARCH_STAGES: Array<{ id: ResearchStage; label: string }> = [
 export default function App() {
   // Theme state
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>('');
 
   // Navigation state
   const [activeTab, setActiveTab] = useState<'research' | 'portfolio' | 'instructions' | 'history' | 'proxy' | 'settings'>('research');
