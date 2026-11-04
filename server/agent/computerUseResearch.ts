@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
-import { browserBridge } from './browserBridge.js';
+import { browserBridge, type BrowserCapture } from './browserBridge.js';
 import { storage } from '../storage/database.js';
 import { getComputerUseModelCandidates, listAvailableGeminiModels } from '../gemini/models.js';
 
@@ -12,6 +12,14 @@ const shotsDir = path.join(root, 'research-screenshots');
 const pending = new Map<string, () => void>();
 const GEMINI_REQUEST_TIMEOUT_MS = 60_000;
 const GEMINI_HEARTBEAT_INTERVAL_MS = 10_000;
+const SITE_CAPTURE_MAX_ATTEMPTS = 3;
+const SITE_CAPTURE_RETRY_DELAY_MS = 1_200;
+const STARTING_PUBLIC_MARKETPLACES = [
+  'https://stock.adobe.com/',
+  'https://www.shutterstock.com/',
+  'https://www.istockphoto.com/',
+  'https://www.freepik.com/'
+];
 
 function log(jobId: string, type: string, message: string, details: Record<string, any> = {}, url = '') {
   const event = { id: crypto.randomUUID(), jobId, at: new Date().toISOString(), type, message, details, url };
@@ -109,6 +117,128 @@ function isUnavailableModelError(error: any): boolean {
 
 function waitForRetry(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getHost(url: string): string {
+  try { return new URL(String(url || '')).hostname.toLowerCase(); } catch { return ''; }
+}
+
+function getPageCaptureProblem(capture: BrowserCapture): string | null {
+  const snapshot = capture?.snapshot;
+  if (!snapshot) return 'The browser returned no page snapshot.';
+  if (!/^https?:\/\//i.test(String(snapshot.url || ''))) {
+    return `The browser did not reach a public web page (current URL: ${snapshot.url || 'unknown'}).`;
+  }
+
+  const text = String(snapshot.text || '').replace(/\s+/g, ' ').trim();
+  const title = String(snapshot.title || '').trim();
+  const failureText = `${title} ${text}`;
+  const knownFailure = failureText.match(/this site can(?:not|'t|’t) be reached|web page not available|webpage not available|ERR_(?:NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|TIMED_OUT|CONNECTION_REFUSED|ADDRESS_UNREACHABLE|INTERNET_DISCONNECTED)|too many requests|429 too many requests|403 forbidden|access denied|temporarily unavailable/i);
+  if (knownFailure) return `The site returned a browser/network error: ${knownFailure[0]}.`;
+
+  const hasVisibleEvidence = text.length >= 45
+    || (snapshot.headings || []).length > 0
+    || (snapshot.links || []).length >= 2
+    || (snapshot.images || []).length >= 2
+    || (snapshot.tables || []).length > 0;
+  if (!hasVisibleEvidence) return 'The page loaded but returned too little readable public content to research.';
+  return null;
+}
+
+function unavailableCapture(url: string, reason: string): BrowserCapture {
+  return {
+    snapshot: {
+      url: url || 'about:blank',
+      title: 'Site skipped after failed attempts',
+      text: `No usable page data was captured after ${SITE_CAPTURE_MAX_ATTEMPTS} attempts. Reason: ${reason}`,
+      headings: [],
+      links: [],
+      images: [],
+      tables: [],
+      passwordFieldCount: 0,
+      verificationHint: false,
+      capturedAt: new Date().toISOString()
+    },
+    sensitive: false
+  };
+}
+
+async function capturePublicPageWithRetries(
+  jobId: string,
+  action: string,
+  requestedUrl: string,
+  previousCapture: BrowserCapture,
+  onProgress?: (stage: string, progress: number, message: string) => void
+): Promise<{ ok: boolean; capture: BrowserCapture; url: string; host: string; attempts: number; reason?: string }> {
+  let lastError = '';
+  let lastUrl = requestedUrl || previousCapture.snapshot.url || '';
+
+  for (let attempt = 1; attempt <= SITE_CAPTURE_MAX_ATTEMPTS; attempt++) {
+    try {
+      const nextCapture = await browserBridge.capture();
+      const problem = getPageCaptureProblem(nextCapture);
+      if (problem) throw new Error(problem);
+      return {
+        ok: true,
+        capture: nextCapture,
+        url: nextCapture.snapshot.url,
+        host: getHost(nextCapture.snapshot.url),
+        attempts: attempt
+      };
+    } catch (error: any) {
+      lastError = String(error?.message || error || 'Unknown browser capture error');
+      let currentUrl = requestedUrl;
+      if (!currentUrl) {
+        try {
+          const status = await browserBridge.status();
+          currentUrl = String(status?.url || '');
+        } catch {
+          // Use the last known public URL when the browser status response is also unavailable.
+        }
+      }
+      lastUrl = currentUrl || previousCapture.snapshot.url || lastUrl;
+      const host = getHost(lastUrl);
+      log(jobId, 'site_retry', `Page capture failed at ${host || lastUrl || 'unknown site'} (attempt ${attempt}/${SITE_CAPTURE_MAX_ATTEMPTS}): ${lastError}`, {
+        action,
+        url: lastUrl,
+        host,
+        attempt,
+        maxAttempts: SITE_CAPTURE_MAX_ATTEMPTS,
+        error: lastError
+      }, lastUrl);
+
+      if (attempt < SITE_CAPTURE_MAX_ATTEMPTS) {
+        onProgress?.('BROWSER_RESEARCH', 18, `Retrying ${host || 'the current public site'} · attempt ${attempt + 1}/${SITE_CAPTURE_MAX_ATTEMPTS}`);
+        await waitForRetry(SITE_CAPTURE_RETRY_DELAY_MS * attempt);
+        if (lastUrl && /^https?:\/\//i.test(lastUrl)) {
+          try {
+            await browserBridge.execute('navigate', { url: lastUrl });
+          } catch (retryNavigationError: any) {
+            lastError += ` · retry navigation: ${String(retryNavigationError?.message || retryNavigationError)}`;
+          }
+        }
+      }
+    }
+  }
+
+  const host = getHost(lastUrl);
+  log(jobId, 'site_skipped', `Skipped ${host || lastUrl || 'the current site'} after ${SITE_CAPTURE_MAX_ATTEMPTS} unsuccessful attempts. Moving to another public source.`, {
+    action,
+    url: lastUrl,
+    host,
+    attempts: SITE_CAPTURE_MAX_ATTEMPTS,
+    reason: lastError,
+    nextStep: 'Do not retry this domain in this run. Choose another independent public website or source family.'
+  }, lastUrl);
+
+  return {
+    ok: false,
+    capture: unavailableCapture(lastUrl, lastError),
+    url: lastUrl,
+    host,
+    attempts: SITE_CAPTURE_MAX_ATTEMPTS,
+    reason: lastError
+  };
 }
 
 async function createInteractionAttempt(
@@ -217,15 +347,67 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   }
   let model = modelCandidates[0];
   const maxTurns = Math.max(12, Math.min(80, input.maxTurns || 55));
-  await browserBridge.show('https://stock.adobe.com/');
-  let capture = await browserBridge.capture();
-  let screenshots = 0;
-  const firstShot = saveScreenshot(input.jobId, capture.screenshotBase64); if (firstShot) screenshots++;
-log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page captured.', {
-    screenshot: firstShot,
-    pageTitle: capture.snapshot.title,
-    initialCapture: true
-  }, capture.snapshot.url);
+  const skippedDomains = new Map<string, string>();
+  let capture: BrowserCapture | null = null;
+  let firstShot: string | undefined;
+  const startupFailures: string[] = [];
+
+  for (const startUrl of STARTING_PUBLIC_MARKETPLACES) {
+    const host = getHost(startUrl);
+    log(input.jobId, 'site_opening', `Opening public marketplace source: ${host}.`, { url: startUrl, host, source: 'startup' }, startUrl);
+    let opened = false;
+    for (let attempt = 1; attempt <= SITE_CAPTURE_MAX_ATTEMPTS; attempt++) {
+      try {
+        await browserBridge.show(startUrl);
+        opened = true;
+        break;
+      } catch (error: any) {
+        const reason = String(error?.message || error);
+        startupFailures.push(`${host}: ${reason}`);
+        log(input.jobId, 'site_retry', `Browser could not open ${host} (attempt ${attempt}/${SITE_CAPTURE_MAX_ATTEMPTS}): ${reason}`, {
+          url: startUrl, host, attempt, maxAttempts: SITE_CAPTURE_MAX_ATTEMPTS, error: reason, action: 'show'
+        }, startUrl);
+        if (attempt < SITE_CAPTURE_MAX_ATTEMPTS) await waitForRetry(SITE_CAPTURE_RETRY_DELAY_MS * attempt);
+      }
+    }
+    if (!opened) {
+      skippedDomains.set(host, startupFailures[startupFailures.length - 1] || 'Browser did not acknowledge the open request.');
+      log(input.jobId, 'site_skipped', `Skipped ${host} after ${SITE_CAPTURE_MAX_ATTEMPTS} browser-open attempts. Trying another marketplace.`, {
+        url: startUrl, host, attempts: SITE_CAPTURE_MAX_ATTEMPTS, reason: skippedDomains.get(host)
+      }, startUrl);
+      continue;
+    }
+
+    const outcome = await capturePublicPageWithRetries(input.jobId, 'startup', startUrl, unavailableCapture(startUrl, 'Initial page capture has not succeeded yet.'), input.onProgress);
+    if (outcome.ok) {
+      capture = outcome.capture;
+      firstShot = saveScreenshot(input.jobId, capture.screenshotBase64);
+      log(input.jobId, 'page_visited', capture.snapshot.title || capture.snapshot.url, {
+        url: capture.snapshot.url,
+        screenshot: firstShot,
+        initialCapture: true,
+        headings: capture.snapshot.headings.slice(0, 20),
+        text: capture.snapshot.text.slice(0, 16000),
+        links: capture.snapshot.links.slice(0, 120),
+        images: capture.snapshot.images.slice(0, 80),
+        tables: capture.snapshot.tables.slice(0, 20)
+      }, capture.snapshot.url);
+      log(input.jobId, 'browser_preview', 'Public marketplace start page captured.', {
+        screenshot: firstShot,
+        pageTitle: capture.snapshot.title,
+        initialCapture: true
+      }, capture.snapshot.url);
+      break;
+    }
+
+    if (outcome.host) skippedDomains.set(outcome.host, outcome.reason || 'Page capture failed.');
+    startupFailures.push(`${host}: ${outcome.reason || 'Page capture failed.'}`);
+  }
+
+  if (!capture) {
+    throw new Error(`The embedded browser could not read any starting public marketplace after ${SITE_CAPTURE_MAX_ATTEMPTS} attempts per site. ${startupFailures.slice(-6).join(' | ') || 'Check the internet connection and restart the app.'}`);
+  }
+
   const tool: any[] = [{ type: 'computer_use', environment: 'browser', enable_prompt_injection_detection: true }];
   const prompt = [
     'You are AS-Radar-X, an autonomous commercial stock-media market research director. Your task is to discover genuinely useful, evidence-backed stock photo and video opportunities by studying PUBLIC web pages only.',
@@ -235,6 +417,8 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
     'REJECTED DATA / EXCLUSIONS: ' + (Array.isArray(input.rejectedItems) && input.rejectedItems.length ? input.rejectedItems.map((item: string) => '- ' + String(item).slice(0, 300)).join('\n') : 'No exclusions supplied.'),
     'OUTPUT LIMIT: at most ' + input.photoCount + ' photo and ' + input.videoCount + ' video opportunities. Return fewer if evidence is weak or repetitive.',
     'RESEARCH COVERAGE STANDARD: Aim for at least 15 distinct useful public pages across at least 6 independent domains and 3 different source families. Treat these as coverage targets, not permission to invent evidence. Continue beyond the minimum while genuinely new evidence is still appearing; stop when additional pages become repetitive or the action budget is reached. If access restrictions or unavailable pages prevent coverage, disclose the shortfall.',
+    'SITE FAILURE RECOVERY: AS-Radar-X automatically gives each public website up to 3 total page-capture attempts (the first attempt plus 2 retries). A retry reloads the same public URL. When a tool result says siteSkipped=true or a site_skipped event is recorded, do not revisit that hostname in this research run. Immediately choose another independent public domain, change source family when possible, and continue researching. Do not repeatedly request the same failed URL, wait indefinitely, or stop the whole research job because one website failed. Explain coverage gaps only when several independent sources are unavailable.',
+    'SOURCE VISIBILITY: Every successfully captured page and every skipped website is logged by AS-Radar-X with its public URL, hostname, attempt count and failure reason. Keep your final memo consistent with those actual observations; do not claim you visited a page that returned no usable content.',
     'SOURCE FAMILY A — STOCK-MARKETPLACE SUPPLY: Search public result pages from multiple stock marketplaces such as Adobe Stock public search, Shutterstock, iStock, Freepik and Pond5. Compare multiple query variants and synonyms. Inspect visible listing titles, keyword language, result ordering, repeated visual compositions, dominant styles, model/prop clichés, format/orientation, and whether results are near-duplicates. Record visible result counts only when clearly displayed. Do not sign in, use contributor tools or access private account pages.',
     'SOURCE FAMILY B — BUYER DEMAND / COMMERCIAL USE: Find primary-source evidence from company product pages, public advertising campaigns, brand websites, agency case studies, campaign showcases, annual reports, public procurement or tender documents, industry/trade publications, and public research or technical reports. Identify who would use an asset, in what channel, and for what communication purpose.',
     'SOURCE FAMILY C — REAL-WORLD CONTEXT: Explore official government, NGO, scientific, educational, healthcare, engineering, climate, technology, manufacturing, logistics and other relevant institutional sources. Use them to identify emerging workflows, infrastructure, technologies, public priorities and durable commercial communication needs.',
@@ -250,6 +434,13 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
     'FINAL RESEARCH MEMO: Summarize coverage by source family and domain, strongest observed demand signals, marketplace competition patterns, under-served visual angles, candidate concepts, buyer use cases, public evidence URLs, dates, what is observed vs inferred, confidence, and remaining uncertainty. Explicitly disclose if the coverage target could not be reached. Do not write final production prompts yet; the separate analyst pass creates those after evidence collection.'
   ].join('\n');
   log(input.jobId, 'model_selection', `Gemini model preference: ${modelPreference}.`, { selectedModel: modelPreference, candidates: modelCandidates });
+  log(input.jobId, 'agent_instructions', 'Exact public-market research instructions sent to Gemini Computer Use.', {
+    prompt: prompt.join('\\n'),
+    model,
+    maxTurns,
+    attemptsPerSite: SITE_CAPTURE_MAX_ATTEMPTS,
+    startingPublicMarketplaces: STARTING_PUBLIC_MARKETPLACES
+  });
 
   input.onProgress?.('PLANNING', 9, 'Sending Gemini its first marketplace research request.');
   if (isVerification(capture.snapshot)) {
@@ -326,8 +517,8 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
         : `Gemini Computer Use could not start using selected model "${modelCandidates[0]}".`
     );
   }
-  let actions = 0, pages = 0;
-  const visited = new Set<string>();
+  let actions = 0, pages = 1;
+  const visited = new Set<string>([capture.snapshot.url]);
   let consecutiveNoNewPages = 0;
   for (let turn = 0; turn < maxTurns; turn++) {
     const calls = (interaction.steps || []).filter((s: any) => s.type === 'function_call');
@@ -338,9 +529,14 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
       return result;
     }
     const results: any[] = [];
+    let forceModelReplan = false;
     for (const call of calls) {
       const args = call.arguments || {};
       const intent = String(args.intent || `Gemini requested ${call.name}`);
+      if (forceModelReplan) {
+        results.push({ skipped: true, reason: 'The previous website failed after 3 attempts. Choose a new public URL on a different hostname before taking another browser action.' });
+        continue;
+      }
       log(input.jobId, 'agent_intent', intent, { action: call.name, safetyDecision: actionSafety(call) }, capture.snapshot.url);
       const safety = actionSafety(call);
       const prohibitedIntent = /(purchase|buy now|checkout|subscribe|upload|delete|remove account|post a comment|send a message|publish|place an order|confirm payment|change account settings|grant access|authorize an app)/i;
@@ -350,6 +546,21 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
         continue;
       }
       if (safety.includes('blocked')) throw new Error(`Gemini safety system blocked browser action: ${call.name}.`);
+      const requestedUrl = call.name === 'navigate' ? String(args.url || '') : '';
+      const requestedHost = getHost(requestedUrl);
+      const currentHost = getHost(capture.snapshot.url);
+      const blockedHost = requestedHost && skippedDomains.has(requestedHost)
+        ? requestedHost
+        : (!requestedUrl && currentHost && skippedDomains.has(currentHost) ? currentHost : '');
+      if (blockedHost) {
+        const reason = skippedDomains.get(blockedHost) || 'This hostname was already skipped after failed attempts.';
+        results.push({ skipped: true, siteSkipped: true, failedUrl: requestedUrl || capture.snapshot.url, host: blockedHost, reason: `${reason} Choose another public website.` });
+        log(input.jobId, 'site_skipped', `Blocked another attempt to revisit failed hostname ${blockedHost}.`, {
+          url: requestedUrl || capture.snapshot.url, host: blockedHost, alreadySkipped: true, reason
+        }, requestedUrl || capture.snapshot.url);
+        forceModelReplan = true;
+        continue;
+      }
       let safetyAcknowledgement = false;
       if (safety.includes('require_confirmation')) {
         capture = await awaitUserHandoff(
@@ -391,11 +602,42 @@ log(input.jobId, 'browser_preview', 'Public Adobe Stock marketplace start page c
         else if (call.name === 'take_screenshot') result = { requested: true };
         else if (call.name === 'open_app') result = { opened: true };
       } catch (error: any) { result = { error: error.message || String(error) }; }
-      results.push(safetyAcknowledgement ? { ...result, safety_acknowledgement: true } : result);
       actions++;
-      capture = await browserBridge.capture();
+      const captureOutcome = await capturePublicPageWithRetries(
+        input.jobId,
+        call.name,
+        requestedUrl,
+        capture,
+        input.onProgress
+      );
+      if (!captureOutcome.ok) {
+        const failedHost = captureOutcome.host || requestedHost || currentHost;
+        if (failedHost) skippedDomains.set(failedHost, captureOutcome.reason || 'Page capture failed after retries.');
+        capture = captureOutcome.capture;
+        const failedResult = {
+          ...(result && typeof result === 'object' ? result : { result }),
+          ...(safetyAcknowledgement ? { safety_acknowledgement: true } : {}),
+          siteSkipped: true,
+          failedUrl: captureOutcome.url,
+          host: failedHost,
+          retryAttempts: captureOutcome.attempts,
+          error: captureOutcome.reason,
+          nextStep: 'Do not revisit this hostname. Continue with another independent public website or source family.'
+        };
+        results.push(failedResult);
+        consecutiveNoNewPages++;
+        forceModelReplan = true;
+        log(input.jobId, 'browser_action', `${call.name}: ${intent} · site skipped after retries`, {
+          action: call.name, result: failedResult, screenshot: undefined, pageTitle: capture.snapshot.title
+        }, captureOutcome.url);
+        input.onProgress?.('BROWSER_RESEARCH', Math.min(78, 12 + Math.round((turn / maxTurns) * 65)), `Skipping ${failedHost || 'unavailable site'} after 3 failed attempts · trying another source`);
+        continue;
+      }
+
+      capture = captureOutcome.capture;
       const screenshotPath = saveScreenshot(input.jobId, capture.screenshotBase64); if (screenshotPath) screenshots++;
-if (capture.snapshot.url && !visited.has(capture.snapshot.url)) {
+      results.push(safetyAcknowledgement ? { ...result, safety_acknowledgement: true } : result);
+      if (capture.snapshot.url && !visited.has(capture.snapshot.url)) {
         visited.add(capture.snapshot.url); pages++; consecutiveNoNewPages = 0;
         log(input.jobId, 'page_visited', capture.snapshot.title || capture.snapshot.url, { url: capture.snapshot.url, screenshot: screenshotPath, headings: capture.snapshot.headings.slice(0, 20), text: capture.snapshot.text.slice(0, 16000), links: capture.snapshot.links.slice(0, 120), images: capture.snapshot.images.slice(0, 80), tables: capture.snapshot.tables.slice(0, 20) }, capture.snapshot.url);
       } else { consecutiveNoNewPages++; }
