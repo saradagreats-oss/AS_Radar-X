@@ -115,7 +115,7 @@ function beginResearchNavigation(url) {
   });
 }
 
-async function waitForResearchPageLoad(timeoutMs = 65000) {
+async function waitForResearchPageLoad(timeoutMs = 20000) {
   if (!researchBrowser) throw new Error('Research browser is not initialized.');
   const wc = researchBrowser.webContents;
   if (researchNavigationError) {
@@ -146,7 +146,9 @@ async function waitForResearchPageLoad(timeoutMs = 65000) {
       reject(new Error(researchNavigationError));
     };
     timer = setTimeout(() => {
+      researchNavigationPending = false;
       cleanup();
+      try { wc.stop(); } catch { /* the page may already have stopped */ }
       reject(new Error(`Browser page is still loading after ${Math.round(timeoutMs / 1000)} seconds: ${wc.getURL() || 'unknown URL'}`));
     }, timeoutMs);
     wc.on('did-stop-loading', onStop);
