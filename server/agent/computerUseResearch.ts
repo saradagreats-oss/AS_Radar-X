@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
 import { browserBridge } from './browserBridge.js';
 import { storage } from '../storage/database.js';
+import { getComputerUseModelCandidates, listAvailableGeminiModels } from '../gemini/models.js';
 
 const root = path.resolve(process.env.AS_RADAR_DATA_DIR || path.resolve(process.cwd(), 'data'));
 const eventsDir = path.join(root, 'research-events');
@@ -89,12 +90,67 @@ function actionSafety(call: any) {
   return String(raw).toLowerCase();
 }
 
+function isRetryableGeminiError(error: any): boolean {
+  const message = String(error?.message || error || '');
+  const status = String(error?.status || error?.code || '');
+  return /\\b(429|500|502|503|504)\\b|RESOURCE_EXHAUSTED|UNAVAILABLE|high demand|temporarily unavailable|overloaded/i.test(status + ' ' + message);
+}
+
+function isUnavailableModelError(error: any): boolean {
+  const message = String(error?.message || error || '');
+  const status = String(error?.status || error?.code || '');
+  return /\\b404\\b|model[^.]{0,80}(not found|not available|not supported)|not found[^.]{0,80}model/i.test(status + ' ' + message);
+}
+
+function waitForRetry(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createInteractionWithRetry(ai: any, request: any, model: string, jobId: string): Promise<any> {
+  let lastError: any;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await ai.interactions.create(request);
+    } catch (error: any) {
+      lastError = error;
+      if (!isRetryableGeminiError(error) || attempt === 2) break;
+      log(jobId, 'gemini_retry', `Gemini Computer Use follow-up request for ${model} returned a temporary error; retry ${attempt + 1}/2.`, {
+        model,
+        attempt: attempt + 1,
+        error: String(error?.message || error)
+      });
+      await waitForRetry(2000 * (attempt + 1));
+    }
+  }
+  throw new Error(`Gemini Computer Use follow-up request failed on "${model}" after retries: ${String(lastError?.message || lastError)}`);
+}
+
 export async function runComputerUseResearch(input: { jobId: string; niche: string; instructions?: string; photoCount: number; videoCount: number; model?: string; maxTurns?: number; onProgress?: (stage: string, progress: number, message: string) => void; onHandoff?: (message: string) => void; onResume?: () => void; memoryContext?: string }) {
   const key = storage.getCustomApiKey() || process.env.GEMINI_API_KEY || '';
   if (!key) throw new Error('Set a Gemini API key in Settings before starting research.');
   if (!browserBridge.available) throw new Error('Computer-use research requires the Windows desktop application.');
   const ai: any = new GoogleGenAI({ apiKey: key });
-  const model = input.model || 'gemini-3.8-flash';
+  const modelPreference = String(input.model || storage.getCustomModel() || 'auto').trim();
+  const autoSelectModel = !modelPreference || modelPreference.toLowerCase() === 'auto';
+  let availableModels: string[] = [];
+  if (autoSelectModel) {
+    try {
+      availableModels = await listAvailableGeminiModels(key);
+    } catch {
+      // Auto can still use the documented compatible-model fallback order.
+    }
+  }
+  const modelCandidates = getComputerUseModelCandidates(
+    modelPreference,
+    storage.getLastSuccessfulModel(),
+    availableModels
+  );
+  if (!modelCandidates.length) {
+    throw new Error(
+      `Selected Gemini model "${modelPreference}" does not support this app's complete Computer Use research workflow. Choose Auto or one of the Computer Use-compatible models in Settings.`
+    );
+  }
+  let model = modelCandidates[0];
   const maxTurns = Math.max(12, Math.min(80, input.maxTurns || 55));
   await browserBridge.show('https://contributor.stock.adobe.com/');
   let capture = await browserBridge.capture();
@@ -125,7 +181,8 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     'Final output should be a detailed research memo with source URLs, observed facts, inferences, evidence confidence, marketplace title examples, competition notes, buyer use cases, portfolio conflicts, rejection insights and distinct candidate concepts. Do not fabricate any figures.',
     'Do not generate final production prompts yet; the separate analyst pass will do that after evidence capture.'
   ].join('\n');
-  log(input.jobId, 'agent_started', `Gemini Computer Use agent started with ${model}.`, { niche: input.niche, maxTurns, startingUrl: capture.snapshot.url });
+  log(input.jobId, 'model_selection', `Gemini model preference: ${modelPreference}.`, { selectedModel: modelPreference, candidates: modelCandidates });
+
   input.onProgress?.('PLANNING', 8, 'Gemini is reviewing the portfolio and planning its research.');
   if (isVerification(capture.snapshot)) {
     await browserBridge.setTakeover(true);
@@ -134,7 +191,59 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
     capture = await browserBridge.capture();
     inspectPortfolio(input.jobId, capture);
   }
-  let interaction: any = await ai.interactions.create({ model, input: [{ type: 'text', text: prompt + '\nVISIBLE START PAGE:\n' + capture.snapshot.text.slice(0, 14000) }, ...(capture.screenshotBase64 ? [{ type: 'image', data: capture.screenshotBase64, mime_type: capture.screenshotMimeType || 'image/jpeg' }] : [])], tools: tool });
+  const initialInput = [
+    { type: 'text', text: prompt + '\nVISIBLE START PAGE:\n' + capture.snapshot.text.slice(0, 14000) },
+    ...(capture.screenshotBase64 ? [{ type: 'image', data: capture.screenshotBase64, mime_type: capture.screenshotMimeType || 'image/jpeg' }] : [])
+  ];
+  let interaction: any = null;
+  const modelFailures: string[] = [];
+  for (const candidateModel of modelCandidates) {
+    let tryNextModel = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        interaction = await ai.interactions.create({
+          model: candidateModel,
+          input: initialInput,
+          tools: tool
+        });
+        model = candidateModel;
+        storage.saveLastSuccessfulModel(model);
+        log(input.jobId, 'agent_started', `Gemini Computer Use agent started with ${model}.`, {
+          niche: input.niche,
+          maxTurns,
+          modelPreference,
+          startingUrl: capture.snapshot.url
+        });
+        break;
+      } catch (error: any) {
+        const message = String(error?.message || error);
+        if (isRetryableGeminiError(error) && attempt < 2) {
+          log(input.jobId, 'gemini_retry', `Gemini Computer Use initial request for ${candidateModel} returned a temporary error; retry ${attempt + 1}/2.`, {
+            model: candidateModel,
+            attempt: attempt + 1,
+            error: message
+          });
+          await waitForRetry(2000 * (attempt + 1));
+          continue;
+        }
+        if (autoSelectModel && (isRetryableGeminiError(error) || isUnavailableModelError(error))) {
+          modelFailures.push(`${candidateModel}: ${message}`);
+          tryNextModel = true;
+          break;
+        }
+        throw new Error(`Gemini Computer Use failed using selected model "${candidateModel}": ${message}`);
+      }
+    }
+    if (interaction) break;
+    if (!tryNextModel) break;
+  }
+  if (!interaction) {
+    throw new Error(
+      autoSelectModel
+        ? `Auto could not start Gemini Computer Use on any available compatible model. ${modelFailures.slice(0, 4).join(' | ') || 'No compatible models were available.'}`
+        : `Gemini Computer Use could not start using selected model "${modelCandidates[0]}".`
+    );
+  }
   let actions = 0, pages = 0;
   const visited = new Set<string>();
   let consecutiveNoNewPages = 0;
@@ -216,7 +325,12 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
       }
     }
     const functionResults = calls.map((call: any, index: number) => ({ type: 'function_result', name: call.name, call_id: call.id || call.call_id, result: [{ type: 'text', text: JSON.stringify({ ...results[index], url: capture.snapshot.url, title: capture.snapshot.title, visibleText: capture.snapshot.text.slice(0, 15000), headings: capture.snapshot.headings.slice(0, 30), links: capture.snapshot.links.slice(0, 80), images: capture.snapshot.images.slice(0, 50), tables: capture.snapshot.tables.slice(0, 20), portfolioRows: capture.snapshot.portfolioRows?.slice(0, 100) || [] }) }, ...(capture.screenshotBase64 ? [{ type: 'image', data: capture.screenshotBase64, mime_type: capture.screenshotMimeType || 'image/jpeg' }] : [])] }));
-    interaction = await ai.interactions.create({ model, previous_interaction_id: interaction.id, input: functionResults, tools: tool });
+    interaction = await createInteractionWithRetry(
+      ai,
+      { model, previous_interaction_id: interaction.id, input: functionResults, tools: tool },
+      model,
+      input.jobId
+    );
     if (consecutiveNoNewPages >= 8 && turn > 15) log(input.jobId, 'coverage_note', 'Gemini has revisited pages without discovering new URLs; it may choose to expand to new sources or conclude coverage.', { turn, pages, actions }, capture.snapshot.url);
   }
   const finalText = getText(interaction) || String(interaction?.output_text || '');
