@@ -528,7 +528,7 @@ export default function App() {
         setIsHistoricalReport(false);
         priorCurrentReportRef.current = null;
         setShowClearHistoryConfirm(false);
-        showToast('All research history and content records have been cleared. Instructions preserved.');
+        showToast('All research history and content records have been cleared. Rejected data and system settings were preserved.');
       } else {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
@@ -1082,7 +1082,7 @@ export default function App() {
                 </p>
               </div>
               <p className="text-[0.68rem] text-[var(--text-dim)]">
-                This list is the only saved personal context sent to the configured AI provider. Research uses public web pages only. Adobe Contributor profile, uploads, earnings, downloads, and account status are not accessed.
+                Of your saved personal context, only this rejection list is sent to the configured AI provider. Research uses public web pages only. Adobe Contributor profile, uploads, earnings, downloads, and account status are not accessed.
               </p>
               <div className="space-y-2">
                 {rejectedItems.map((item, idx) => (
@@ -1459,7 +1459,7 @@ export default function App() {
                 <p className="text-emerald-400 flex items-center gap-1.5">
                   <i className="fa-solid fa-shield-halved"></i>
                   <span>
-                    <strong className="text-emerald-300">Untouched &amp; Preserved:</strong> All Analyst Instructions, Exclusion &amp; Rejection memory, PDF instructions, and System credentials stay 100% untouched.
+                    <strong className="text-emerald-300">Untouched &amp; Preserved:</strong> Rejected Data and system credentials stay preserved. Adobe Contributor profile data is never collected.
                   </span>
                 </p>
               </div>
@@ -1482,7 +1482,7 @@ export default function App() {
                     <div>
                       <strong>Are you sure you want to clean all history?</strong>
                       <div className="text-[0.68rem] text-[var(--text-muted)] mt-0.5">
-                        This action will permanently delete all completed research runs ({historyList.length} records) and generated opportunities. Instructions and system settings will NOT be touched.
+                        This action will permanently delete all completed research runs ({historyList.length} records) and generated opportunities. Rejected Data and system settings will NOT be touched.
                       </div>
                     </div>
                   </div>
