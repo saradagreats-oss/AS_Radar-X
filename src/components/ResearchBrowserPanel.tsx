@@ -39,6 +39,7 @@ export function ResearchBrowserPanel({ jobId, events, paused, visible, onContinu
       window.removeEventListener('resize', syncBounds);
       window.removeEventListener('scroll', syncBounds, true);
       window.clearInterval(timer);
+      window.asRadarDesktop?.hideBrowser().catch(() => undefined);
     };
   }, [visible]);
 
