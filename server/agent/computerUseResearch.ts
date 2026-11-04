@@ -93,13 +93,13 @@ function actionSafety(call: any) {
 function isRetryableGeminiError(error: any): boolean {
   const message = String(error?.message || error || '');
   const status = String(error?.status || error?.code || '');
-  return /\\b(429|500|502|503|504)\\b|RESOURCE_EXHAUSTED|UNAVAILABLE|high demand|temporarily unavailable|overloaded/i.test(status + ' ' + message);
+  return /\b(429|500|502|503|504)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|high demand|temporarily unavailable|overloaded/i.test(status + ' ' + message);
 }
 
 function isUnavailableModelError(error: any): boolean {
   const message = String(error?.message || error || '');
   const status = String(error?.status || error?.code || '');
-  return /\\b404\\b|model[^.]{0,80}(not found|not available|not supported)|not found[^.]{0,80}model/i.test(status + ' ' + message);
+  return /\b404\b|model[^.]{0,80}(not found|not available|not supported)|not found[^.]{0,80}model/i.test(status + ' ' + message);
 }
 
 function waitForRetry(ms: number): Promise<void> {
