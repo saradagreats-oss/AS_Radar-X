@@ -108,7 +108,7 @@ async function runTests() {
   const agentSource = fs.readFileSync(new URL('../agent/computerUseResearch.ts', import.meta.url), 'utf8');
   assert(researcherSource.includes('runComputerUseResearch'), 'coordinator starts the computer-use agent');
   assert(researcherSource.includes('runGeminiStrategicAnalyst'), 'browser observations flow into final analysis');
-  assert(researcherSource.includes('model: storage.getCustomModel()'), 'coordinator passes the saved user model to browser research');
+  assert(researcherSource.includes('model: options.model || storage.getCustomModel()'), 'coordinator passes the saved user model to browser research');
   assert(researcherSource.includes('allowModelFallback:'), 'coordinator preserves whether Auto mode was selected');
   const serverSource = fs.readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../../src/App.tsx', import.meta.url), 'utf8');
