@@ -98,7 +98,7 @@ async function browserSnapshot() {
     const portfolioRows = [...document.querySelectorAll('tr,[role=row],[data-testid*=asset],[class*=asset-card],[class*=AssetCard]')].slice(0,600).map(e=>{const t=(e.innerText||'').trim().slice(0,1200);const a=e.querySelector('a[href]');const img=e.querySelector('img');return {text:t,href:a?.href||'',title:a?.getAttribute('title')||img?.alt||'',image:img?.currentSrc||img?.src||''};}).filter(r=>r.text.length>12);\n    return {url:location.href,title:document.title,text,headings,links,images,tables,portfolioRows,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor|verification code|one[- ]time code|authenticator|security code/i.test(text),capturedAt:new Date().toISOString()};
   })()`, true);
   let screenshotBase64;
-  if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint && browserVisible) {
+  if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint) {
     const image = await researchBrowser.webContents.capturePage();
     screenshotBase64 = image.toJPEG(65).toString('base64');
   }
