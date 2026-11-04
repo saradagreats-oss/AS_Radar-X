@@ -4,7 +4,6 @@ import { getComputerUseModelCandidates, listAvailableGeminiModels } from './mode
 import type {
   ClusterAnalysis,
   ConceptCluster,
-  PdfDocumentConfig,
   PhotoOpportunity,
   RawEvidence,
   ResearchReport,
@@ -25,16 +24,12 @@ interface AnalystInput {
   sourceStatuses: Record<string, string>;
   requestedPhotoCount: number;
   requestedVideoCount: number;
-  userCustomInstructions?: string;
   rejectedContentList?: string[];
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   webResearch?: WebResearchResult;
-  pdfDoc?: PdfDocumentConfig | null;
   tagCount?: number;
-  titleInstructions?: string;
   researchMemo?: string;
   evidenceSources?: SourceEvidenceRecord[];
-  portfolioSummary?: Record<string, any> | null;
   model?: string;
   allowModelFallback?: boolean;
 }
@@ -110,21 +105,10 @@ function normalizeTags(rawTags: string[] = [], title = '', prompt = '', requeste
 
 export async function runGeminiStrategicAnalyst(input: AnalystInput): Promise<GeminiAnalystOutput> {
   const ai = getClient();
-  const pdfDoc = input.pdfDoc || storage.getPdfDocument();
-
-  const pdfContextText = pdfDoc?.base64Data
-    ? `\nATTACHED REFERENCE PDF DOCUMENT: "${pdfDoc.fileName}" (${Math.round(pdfDoc.fileSize / 1024)} KB)
-PDF ANALYSIS DIRECTIVES & SPECIFIC INSTRUCTIONS:
-${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graphic assets, layouts, and contextual text inside this PDF document. Synthesize stock photo and video opportunities directly aligned with the visual essence and commercial needs indicated in this PDF.'}
-`
-    : '';
-
   const evidencePayload = {
     research_memo: input.researchMemo || '',
     evidence_sources: input.evidenceSources || input.webResearch?.sources || [],
-    portfolio_snapshot: input.portfolioSummary || null,
     requested_tag_count: Math.max(1, Math.min(50, Number(input.tagCount) || 25)),
-    title_instructions: input.titleInstructions || '',
     source_statuses: input.sourceStatuses,
     deterministic_analysis: input.clusterAnalyses.map((a) => ({
       name: a.cluster.name,
@@ -175,26 +159,24 @@ CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
    - Include the concept, why it matters, buyer use case, visual gap, longevity, risk flags and evidence references requested by the JSON schema.
    - Every score component must cite one or more valid evidence IDs from the supplied source list. Use 0 when the evidence is absent.
 
-${pdfContextText}
-
 TITLE STYLE INSTRUCTIONS:
-${input.titleInstructions?.trim() || 'No title style override. Infer natural title length, word order, vocabulary and punctuation from relevant stock marketplace listing titles observed during this run. Keep titles readable, specific and searchable; never keyword-stuff.'}
+Infer natural title length, word order, vocabulary and punctuation from the public stock-marketplace listings observed during this research. Keep titles readable, specific and searchable; never keyword-stuff.
 
-USER CUSTOM INSTRUCTIONS:
-${input.userCustomInstructions || 'None'}
+MARKET EVIDENCE STANDARD:
+- Cross-check each candidate against both marketplace supply evidence and independent buyer-demand/use-case evidence.
+- For every gap, explain what is already widely represented, what is visually or commercially under-served, and why the proposed angle is meaningfully different.
+- Distinguish directly observed facts from interpretations. Never invent keyword search volumes, downloads, sales, revenue, ranking data, market share or listing counts.
+- Prefer corroboration from at least two independent sources and identify weak or missing evidence explicitly.
+- Do not use personal account data, contributor profile data, private dashboards or user portfolio information; research must rely on public sources only.
 
 RESEARCH MEMO AND OBSERVED SOURCE RECORDS:
 ${(input.researchMemo || '').slice(0, 30000)}
 ${JSON.stringify(input.evidenceSources || input.webResearch?.sources || [], null, 2)}
 
-LIVE PORTFOLIO SNAPSHOT:
-${JSON.stringify(input.portfolioSummary || null, null, 2)}
-
 USER REJECTION LIST (Strict Anti-Cliché / Exclusions):
 ${(input.rejectedContentList || []).map((r) => `- ${r}`).join('\n') || 'None'}
 
-PAST OPPORTUNITY HISTORY (Exclusion Memory — Avoid Similar Angles):
-${(input.pastOpportunitiesHistory || []).slice(0, 35).map((p) => `- ${p.title} | ${p.concept}`).join('\n') || 'None'}
+
 `;
 
   const promptText = `Synthesize the final AS-Radar-X opportunity report strictly adhering to the schema and instructions.
@@ -318,16 +300,7 @@ Return strictly valid JSON matching the schema.`;
     required: ['evidence_summary', 'photos', 'videos']
   };
 
-  const contents: any[] = [];
-  if (pdfDoc?.base64Data) {
-    contents.push({
-      inlineData: {
-        mimeType: pdfDoc.mimeType || 'application/pdf',
-        data: pdfDoc.base64Data
-      }
-    });
-  }
-  contents.push({ text: promptText });
+  const contents: any[] = [{ text: promptText }];
 
   let lastError: any = null;
 
