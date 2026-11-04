@@ -131,7 +131,46 @@ export interface ProductionSpec {
   loop_strategy?: string;
 }
 
-export interface ScoreComponent {\n  score: number;\n  reason: string;\n  evidence_ids: number[];\n}\n\nexport interface OpportunityScore {\n  score: number;\n  confidence: 'HIGH' | 'MEDIUM' | 'LOW';\n  breakdown: {\n    recurring_demand: ScoreComponent;\n    commercial_use: ScoreComponent;\n    marketplace_evidence: ScoreComponent;\n    supply_gap: ScoreComponent;\n    longevity: ScoreComponent;\n    production_feasibility: ScoreComponent;\n  };\n  formula: string;\n}\n\nexport interface SourceEvidenceRecord {\n  id: number;\n  title: string;\n  url: string;\n  source_family?: string;\n  observation?: string;\n}\n\nexport interface PortfolioSummary {\n  rowCount: number;\n  accepted?: number | null;\n  rejected?: number | null;\n  pending?: number | null;\n  totalDownloads?: number | null;\n  changedAssets?: number;\n  sourceUrl?: string;\n  capturedAt?: string;\n}\n\nexport interface PhotoOpportunity {
+export interface ScoreComponent {
+  score: number;
+  reason: string;
+  evidence_ids: number[];
+}
+
+export interface OpportunityScore {
+  score: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  breakdown: {
+    recurring_demand: ScoreComponent;
+    commercial_use: ScoreComponent;
+    marketplace_evidence: ScoreComponent;
+    supply_gap: ScoreComponent;
+    longevity: ScoreComponent;
+    production_feasibility: ScoreComponent;
+  };
+  formula: string;
+}
+
+export interface SourceEvidenceRecord {
+  id: number;
+  title: string;
+  url: string;
+  source_family?: string;
+  observation?: string;
+}
+
+export interface PortfolioSummary {
+  rowCount: number;
+  accepted?: number | null;
+  rejected?: number | null;
+  pending?: number | null;
+  totalDownloads?: number | null;
+  changedAssets?: number;
+  sourceUrl?: string;
+  capturedAt?: string;
+}
+
+export interface PhotoOpportunity {
   id: string;
   title: string; // Unified SEO-optimized Title merging main subject and visual context
   prompt: string; // Top-level detailed prompt with texture, lighting, camera framing, visual style
@@ -150,6 +189,7 @@ export interface ScoreComponent {\n  score: number;\n  reason: string;\n  eviden
   buyer_use_case?: string;
   risk_notes?: string;
   evidence?: Record<string, any>;
+  score?: OpportunityScore;
 }
 
 export interface VideoOpportunity {
@@ -173,6 +213,7 @@ export interface VideoOpportunity {
   buyer_use_case?: string;
   risk_notes?: string;
   evidence?: Record<string, any>;
+  score?: OpportunityScore;
 }
 
 export interface PdfDocumentConfig {
@@ -199,7 +240,11 @@ export interface ResearchReport {
   photos: PhotoOpportunity[];
   videos: VideoOpportunity[];
   warnings?: string[];
-  internal_score_explanation?: string;\n  score_summary?: { average: number; highest: number; scored: number; formula: string };\n  portfolio_summary?: PortfolioSummary | null;\n  browser_research?: { pages: number; actions: number; screenshots: number; model: string; turn_limit_reached?: boolean };\n  evidence_sources?: SourceEvidenceRecord[];
+  internal_score_explanation?: string;
+  score_summary?: { average: number; highest: number; scored: number; formula: string };
+  portfolio_summary?: PortfolioSummary | null;
+  browser_research?: { pages: number; actions: number; screenshots: number; model: string; turn_limit_reached?: boolean };
+  evidence_sources?: SourceEvidenceRecord[];
   analysis_stats?: {
     raw_evidence_count: number;
     deduplicated_evidence_count: number;
@@ -222,7 +267,12 @@ export interface HistoryRecord {
 }
 
 export type ResearchStage =
-  | 'INITIALIZING'\n  | 'PLANNING'\n  | 'BROWSER_RESEARCH'\n  | 'PAUSED_FOR_USER'\n  | 'FINAL_ANALYSIS'\n  | 'PORTFOLIO_SYNC'
+  | 'INITIALIZING'
+  | 'PLANNING'
+  | 'BROWSER_RESEARCH'
+  | 'PAUSED_FOR_USER'
+  | 'FINAL_ANALYSIS'
+  | 'PORTFOLIO_SYNC'
   | 'COLLECTING'
   | 'NORMALIZING'
   | 'DEDUPLICATING'
