@@ -118,7 +118,17 @@ async function runTests() {
   assert(agentSource.includes('resumeComputerUse') && agentSource.includes('human_handoff'), 'verification pauses can be resumed by the user');
   assert(agentSource.includes('getComputerUseModelCandidates') && !agentSource.includes("input.model || 'gemini-3.8-flash'"), 'browser agent resolves the selected model instead of a hardcoded 3.8 fallback');
   assert(analystSource.includes('candidateModels(input.model, input.allowModelFallback)'), 'final analyst receives the resolved model and only permits Auto fallback');
-  assert(agentSource.includes('portfolio_synced') && agentSource.includes('upsertPortfolioAssets'), 'visible portfolio data is stored automatically');
+  const browserBridgeSource = fs.readFileSync(new URL('../agent/browserBridge.ts', import.meta.url), 'utf8');
+  const electronSource = fs.readFileSync(new URL('../../electron/main.cjs', import.meta.url), 'utf8');
+  const storageSource = fs.readFileSync(new URL('../storage/database.ts', import.meta.url), 'utf8');
+  assert(!agentSource.includes('inspectPortfolio') && !agentSource.includes('portfolioRows'), 'browser agent does not inspect or capture portfolio rows');
+  assert(agentSource.includes('REJECTED DATA / EXCLUSIONS'), 'browser agent receives the saved rejection list as its only saved user context');
+  assert(!browserBridgeSource.includes('portfolioRows'), 'browser snapshots do not expose portfolio row extraction');
+  assert(electronSource.includes("host === 'contributor.stock.adobe.com'") && !electronSource.includes('portfolioRows'), 'desktop browser blocks private contributor pages and never scrapes portfolio rows');
+  assert(electronSource.includes("persist:as-radar-public-research-v2"), 'public research uses a fresh anonymous browser session');
+  assert(!serverSource.includes('/api/portfolio/assets') && !appSource.includes('PortfolioTable'), 'portfolio tab and API are removed');
+  assert(!researcherSource.includes('getInstructions') && !researcherSource.includes('getPdfDocument') && !analystSource.includes('LIVE PORTFOLIO SNAPSHOT'), 'custom instruction, PDF and profile data are excluded from model requests');
+  assert(storageSource.includes('DROP TABLE IF EXISTS portfolio_assets') && storageSource.includes("DELETE FROM user_settings WHERE key IN ('gemini_instructions', 'pdf_document_config')"), 'legacy portfolio, instruction and PDF records are removed locally');
   assert(!researcherSource.includes('RedditCollector') && !researcherSource.includes('DiscordCollector'), 'the research pipeline has no social collector dependency');
   assert(!analystSource.includes('site:reddit.com') && !analystSource.includes('discord.com'), 'the final analyst has no Reddit/Discord source prompts');
 
