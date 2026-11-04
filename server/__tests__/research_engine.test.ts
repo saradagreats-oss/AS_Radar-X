@@ -12,6 +12,7 @@ import { calculateJaccardSimilarity, deduplicateEvidence } from '../normalizatio
 import { cleanText, extractTokens, normalizeEvidence } from '../normalization/textNormalizer.js';
 import { normalizeResearchPages } from '../normalization/researchKnowledge.js';
 import { storage } from '../storage/database.js';
+import { getComputerUseModelCandidates } from '../gemini/models.js';
 import type { RawEvidence } from '../types.js';
 
 let passed = 0;
@@ -93,19 +94,31 @@ async function runTests() {
   assert(checkHistoryProtection('Autonomous Drone Precision Agriculture Monitoring', 'Crop drone sensing', past).isRepetitive, 'near-duplicate concepts are detected');
   assert(!checkHistoryProtection('Organic Greenhouse Soil Moisture Sensor Calibration', 'Handheld soil testing', past).isRepetitive, 'materially different angles remain eligible');
 
-  console.log('\n--- TEST 6: Research workflow integration ---');
+  console.log('\n--- TEST 6: Gemini model routing ---');
+  const explicitModel = getComputerUseModelCandidates('gemini-3.6-flash', 'gemini-3.8-flash', ['gemini-3.8-flash', 'gemini-3.6-flash']);
+  assert(explicitModel.length === 1 && explicitModel[0] === 'gemini-3.6-flash', 'explicit model selection is strict and ignores last-successful/fallback models');
+  const unsupportedModel = getComputerUseModelCandidates('gemini-2.0-flash', '', ['gemini-2.0-flash']);
+  assert(unsupportedModel.length === 0, 'models outside the combined Computer Use workflow are rejected');
+  const autoModels = getComputerUseModelCandidates('auto', 'gemini-3.8-flash', ['gemini-3.8-flash', 'gemini-3.6-flash']);
+  assert(autoModels[0] === 'gemini-3.6-flash' && autoModels.includes('gemini-3.8-flash'), 'Auto prioritizes an available stable model before falling back to 3.8');
+
+  console.log('\n--- TEST 7: Research workflow integration ---');
   const researcherSource = fs.readFileSync(new URL('../researcher.ts', import.meta.url), 'utf8');
   const analystSource = fs.readFileSync(new URL('../gemini/analyst.ts', import.meta.url), 'utf8');
   const agentSource = fs.readFileSync(new URL('../agent/computerUseResearch.ts', import.meta.url), 'utf8');
   assert(researcherSource.includes('runComputerUseResearch'), 'coordinator starts the computer-use agent');
   assert(researcherSource.includes('runGeminiStrategicAnalyst'), 'browser observations flow into final analysis');
+  assert(researcherSource.includes('model: storage.getCustomModel()'), 'coordinator passes the saved user model to browser research');
+  assert(researcherSource.includes('allowModelFallback:'), 'coordinator preserves whether Auto mode was selected');
   assert(researcherSource.includes('getResearchEvents'), 'research history is reused as durable evidence');
   assert(agentSource.includes('resumeComputerUse') && agentSource.includes('human_handoff'), 'verification pauses can be resumed by the user');
+  assert(agentSource.includes('getComputerUseModelCandidates') && !agentSource.includes("input.model || 'gemini-3.8-flash'"), 'browser agent resolves the selected model instead of a hardcoded 3.8 fallback');
+  assert(analystSource.includes('candidateModels(input.model, input.allowModelFallback)'), 'final analyst receives the resolved model and only permits Auto fallback');
   assert(agentSource.includes('portfolio_synced') && agentSource.includes('upsertPortfolioAssets'), 'visible portfolio data is stored automatically');
   assert(!researcherSource.includes('RedditCollector') && !researcherSource.includes('DiscordCollector'), 'the research pipeline has no social collector dependency');
   assert(!analystSource.includes('site:reddit.com') && !analystSource.includes('discord.com'), 'the final analyst has no Reddit/Discord source prompts');
 
-  console.log('\n--- TEST 7: Local persistence ---');
+  console.log('\n--- TEST 8: Local persistence ---');
   const eventJob = 'test_event_' + Date.now();
   storage.appendResearchEvent({
     id: 'event_' + Date.now(),
