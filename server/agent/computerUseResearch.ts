@@ -86,16 +86,19 @@ async function awaitUserHandoff(
     await browserBridge.setTakeover(false).catch(() => undefined);
   }
 
-  const capture = await browserBridge.capture();
-  const screenshot = saveScreenshot(jobId, capture.screenshotBase64);
-  inspectPortfolio(jobId, capture);
-  log(jobId, 'browser_preview', 'The user handoff is complete. Gemini has the browser back.', {
-    screenshot,
-    pageTitle: capture.snapshot.title,
-    userHandoffCompleted: true
-  }, capture.snapshot.url);
-  await browserBridge.hide();
-  return capture;
+  try {
+    const capture = await browserBridge.capture();
+    const screenshot = saveScreenshot(jobId, capture.screenshotBase64);
+    inspectPortfolio(jobId, capture);
+    log(jobId, 'browser_preview', 'The user handoff is complete. Gemini has the browser back.', {
+      screenshot,
+      pageTitle: capture.snapshot.title,
+      userHandoffCompleted: true
+    }, capture.snapshot.url);
+    return capture;
+  } finally {
+    await browserBridge.hide().catch(() => undefined);
+  }
 }
 
 function getText(interaction: any) {
@@ -106,7 +109,7 @@ function isVerification(snapshot: any) {
   const text = String(snapshot?.text || '');
   let url = '';
   try { url = new URL(String(snapshot?.url || '')).hostname.toLowerCase(); } catch { /* no URL */ }
-  const adobeAuthHost = /(^|\\.)((account|auth)\\.adobe\\.com|adobeid[^.]*\\.services\\.adobe\\.com)$/.test(url);
+  const adobeAuthHost = /(^|\\.)((account|auth)\.adobe\.com|adobeid[^.]*\.services\.adobe\.com)$/.test(url);
   const authCopy = /sign in to adobe|sign in to continue|enter your password|email address to continue|two.step verification|verify your identity/i.test(text);
   return !!snapshot?.verificationHint || snapshot?.passwordFieldCount > 0 || (adobeAuthHost && authCopy);
 }
@@ -152,8 +155,6 @@ async function createInteractionAttempt(
     log(jobId, 'gemini_wait', `Gemini is still processing the ${phaseLabel} (${elapsedSeconds}s).`, { model, phase, elapsedSeconds });
     if (phase === 'initial') {
       onProgress?.('PLANNING', Math.min(15, 9 + Math.floor(elapsedSeconds / 15)), `Waiting for Gemini's first response · ${elapsedSeconds}s · ${model}`);
-    } else {
-      onProgress?.('BROWSER_RESEARCH', 12, `Gemini is processing the next research step · ${elapsedSeconds}s`);
     }
   }, GEMINI_HEARTBEAT_INTERVAL_MS);
 
@@ -296,9 +297,10 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
   ];
   let interaction: any = null;
   const modelFailures: string[] = [];
+  let timedOutModelFallbacks = 0;
   for (const candidateModel of modelCandidates) {
     let tryNextModel = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         interaction = await createInteractionAttempt(
           ai,
@@ -323,8 +325,9 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
         break;
       } catch (error: any) {
         const message = String(error?.message || error);
-        if (isRetryableGeminiError(error) && attempt < 2) {
-          log(input.jobId, 'gemini_retry', `Gemini Computer Use initial request for ${candidateModel} returned a temporary error; retry ${attempt + 1}/2.`, {
+        const requestTimedOut = /timed? ?out|timeout|abort/i.test(message);
+        if (isRetryableGeminiError(error) && attempt < 1 && !requestTimedOut) {
+          log(input.jobId, 'gemini_retry', `Gemini Computer Use initial request for ${candidateModel} returned a temporary error; retry 1/1.`, {
             model: candidateModel,
             attempt: attempt + 1,
             error: message
@@ -332,7 +335,8 @@ export async function runComputerUseResearch(input: { jobId: string; niche: stri
           await waitForRetry(2000 * (attempt + 1));
           continue;
         }
-        if (autoSelectModel && (isRetryableGeminiError(error) || isUnavailableModelError(error))) {
+        if (autoSelectModel && (isRetryableGeminiError(error) || isUnavailableModelError(error)) && (!requestTimedOut || timedOutModelFallbacks < 1)) {
+          if (requestTimedOut) timedOutModelFallbacks++;
           modelFailures.push(`${candidateModel}: ${message}`);
           tryNextModel = true;
           break;
