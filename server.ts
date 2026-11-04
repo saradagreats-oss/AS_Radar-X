@@ -57,12 +57,17 @@ app.post('/api/research', (req: Request, res: Response) => {
 
     const niche = typeof req.body?.niche === 'string' ? req.body.niche.trim().slice(0, 3000) : '';
     const titleInstructions = typeof req.body?.title_instructions === 'string' ? req.body.title_instructions.trim().slice(0, 1200) : '';
+    const requestedModel = normalizeGeminiModelId(String(req.body?.model ?? storage.getCustomModel() ?? 'auto'));
+    if (requestedModel.toLowerCase() !== 'auto' && !isComputerUseModelSupported(requestedModel)) {
+      res.status(400).json({ error: `"${requestedModel}" is not supported for this app's Computer Use research pipeline. Refresh the model list in Settings and choose a compatible model.` });
+      return;
+    }
     const tagCount = req.body?.tag_count === undefined ? 25 : Number(req.body.tag_count);
     if (!Number.isInteger(tagCount) || tagCount < 1 || tagCount > 50) {
       res.status(400).json({ error: 'Tag count must be between 1 and 50.' });
       return;
     }
-    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount });
+    const jobId = researchCoordinator.createJob(photoCount, videoCount, { niche, titleInstructions, tagCount, model: requestedModel });
     res.json({ job_id: jobId, status: 'RUNNING', photo_count: photoCount, video_count: videoCount, tag_count: tagCount });
   } catch (err: any) {
     console.error('Error starting research:', err);
