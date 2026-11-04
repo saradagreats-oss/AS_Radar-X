@@ -29,7 +29,6 @@ interface AnalystInput {
   rejectedContentList?: string[];
   pastOpportunitiesHistory?: Array<{ title: string; concept: string }>;
   webResearch?: WebResearchResult;
-  isPlatformDataEnabled?: boolean;
   pdfDoc?: PdfDocumentConfig | null;
   tagCount?: number;
   titleInstructions?: string;
@@ -113,7 +112,6 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
     portfolio_snapshot: input.portfolioSummary || null,
     requested_tag_count: Math.max(1, Math.min(50, Number(input.tagCount) || 25)),
     title_instructions: input.titleInstructions || '',
-    is_platform_data_enabled: input.isPlatformDataEnabled ?? true,
     source_statuses: input.sourceStatuses,
     deterministic_analysis: input.clusterAnalyses.map((a) => ({
       name: a.cluster.name,
@@ -122,8 +120,8 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
       recurrence: a.recurrence,
       score: a.score
     })),
-    raw_evidence_count: input.rawEvidence.length,
-    human_discussion_evidence_sample: input.rawEvidence.slice(0, 50).map((e) => ({
+    raw_observation_count: input.rawEvidence.length,
+    normalized_observation_sample: input.rawEvidence.slice(0, 50).map((e) => ({
       source: e.source,
       title: e.raw_title,
       description: e.raw_description?.slice(0, 160),
@@ -135,14 +133,14 @@ ${pdfDoc.instructions || 'Carefully inspect all pages, visual photographs, graph
 
 CRITICAL OPERATIONAL RULES & OUTPUT REQUIREMENTS:
 1. MERGED SEO TITLE ONLY (NO DESCRIPTION):
-   - For every Photo and Video opportunity, combine the primary subject, setting, and critical visual details into ONE single, natural, highly SEO-optimized English title.
+   - For every Photo and Video opportunity, combine the main subject and the details that help a buyer recognize the asset into ONE natural, searchable English title.
    - Do NOT produce a separate description field. All essential context is merged directly into this single SEO title.
-   - Strictly avoid special characters like pipe ('|'), brackets, or double hyphens ('--').
+   - Keep the title clear and readable. Do not keyword-stuff or repeat near-synonyms.
 
 2. TOP-TIER PRODUCTION-READY PROMPT:
-   - Provide an ultra-detailed, top-level AI image or video generation prompt.
-   - Must explicitly specify: main visual subject, rich fine surface texture details (e.g. tactile weave, brushed metal, organic grain, micro-specular sheen, fine subsurface scattering), lighting setup (e.g. soft diffused sidelight, volumetric morning rim light, studio high-key), camera framing and lens (e.g. 85mm f/1.4, eye-level cinematic shot, shallow depth of field), background depth, color palette, and realism constraints.
-   - For Video prompts: explicitly include dynamic camera movement (smooth slider push-in, low dolly glide), physical subject movement choreography, frame rate, and loop potential.
+   - Write a production prompt that is executable and specific to the actual buyer use case and observed visual gap.
+   - Choose a suitable visual medium, composition, environment, camera approach and lighting for that subject. Do not force macro photography, cinematic lighting, shallow depth of field, or a fixed camera style when they do not fit.
+   - For Video prompts: explain the purposeful action and natural motion, and include camera movement, duration and loop potential only where they add real value.
    - STRICT CONSTRAINT 1: Do NOT clearly or directly show any human faces. Keep subjects faceless, in silhouette, from behind, over-the-shoulder, or focused on hands, tools, and environments.
    - STRICT CONSTRAINT 2: Absolutely NO text, words, signs, watermarks, or typography inside the visual content.
 
