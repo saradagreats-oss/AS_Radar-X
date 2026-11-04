@@ -26,6 +26,7 @@ function safeHttpUrl(value) {
     const url = new URL(String(value || ''));
     if (!['http:', 'https:'].includes(url.protocol)) return null;
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'contributor.stock.adobe.com' || host.endsWith('.contributor.stock.adobe.com')) return null;
     if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.test')) return null;
     if (net.isIP(host) === 4) {
       const p = host.split('.').map(Number);
@@ -95,7 +96,7 @@ async function browserSnapshot() {
     const links = [...document.querySelectorAll('a[href]')].slice(0, 250).map(a => ({text:(a.innerText||a.getAttribute('aria-label')||'').trim().slice(0,240),href:a.href})).filter(a => a.href && a.text);
     const images = [...document.images].slice(0, 160).map(i => ({src:i.currentSrc||i.src,alt:i.alt||'',width:i.naturalWidth||i.width||0,height:i.naturalHeight||i.height||0})).filter(i=>i.src);
     const tables = [...document.querySelectorAll('table')].slice(0,20).map(t=>[...t.querySelectorAll('tr')].slice(0,100).map(r=>(r.innerText||'').trim().slice(0,1000)));
-    const portfolioRows = [...document.querySelectorAll('tr,[role=row],[data-testid*=asset],[class*=asset-card],[class*=AssetCard]')].slice(0,600).map(e=>{const t=(e.innerText||'').trim().slice(0,1200);const a=e.querySelector('a[href]');const img=e.querySelector('img');return {text:t,href:a?.href||'',title:a?.getAttribute('title')||img?.alt||'',image:img?.currentSrc||img?.src||''};}).filter(r=>r.text.length>12);\n    return {url:location.href,title:document.title,text,headings,links,images,tables,portfolioRows,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor|verification code|one[- ]time code|authenticator|security code/i.test(text),capturedAt:new Date().toISOString()};
+return {url:location.href,title:document.title,text,headings,links,images,tables,passwordFieldCount:document.querySelectorAll('input[type=password]').length,focusedPassword,verificationHint:/captcha|verify you are human|unusual traffic|security check|two-factor|two factor|verification code|one[- ]time code|authenticator|security code/i.test(text),capturedAt:new Date().toISOString()};
   })()`, true);
   let screenshotBase64;
   if (!snapshot.focusedPassword && snapshot.passwordFieldCount === 0 && !snapshot.verificationHint) {
